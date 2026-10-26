@@ -96,7 +96,7 @@ export async function runStart(args: readonly string[], options: RunOptions): Pr
  * @param options - global options.
  * @returns the exit code.
  */
-export function runStop(options: RunOptions): number {
+export async function runStop(options: RunOptions): Promise<number> {
   const context = contextOf(options)
   if (context === undefined) return 4
   const { config } = context
@@ -107,6 +107,13 @@ export function runStop(options: RunOptions): number {
     return 0
   }
   stopService(config.webPort)
+  // taskkill succeeding is not the same as the port being free: protection software can keep
+  // the process alive, and reporting success there would be a lie.
+  const freed = await waitPortFree(config.webPort)
+  if (!freed) {
+    process.stderr.write(`dsh-upgrade stop: pid ${owner} still holds ${config.webPort}` + "\n")
+    return 4
+  }
   if (context.json) process.stdout.write(`${JSON.stringify({ ok: true, running: false, stopped: owner })}\n`)
   else process.stdout.write(`stopped pid ${owner}\n`)
   return 0
@@ -143,7 +150,7 @@ export async function runToggle(args: readonly string[], options: RunOptions): P
       return 0
     }
   }
-  const stopped = runStop(options)
+  const stopped = await runStop(options)
   if (stopped !== 0) return stopped
   await waitPortFree(context.config.webPort)
   return 0
@@ -225,3 +232,5 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
   ].join('\n') + '\n')
   return 0
 }
+
+

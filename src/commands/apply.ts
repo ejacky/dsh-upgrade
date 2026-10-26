@@ -248,6 +248,11 @@ export async function runRollback(args: readonly string[], options: RunOptions):
     return 2
   }
   const configPath = resolveConfigPath(options.configPath, options.cwd, options.toolRoot)
+  if (!existsSync(configPath)) {
+    process.stderr.write(`dsh-upgrade rollback: ${configPath} not found (run "dsh-upgrade init")
+`)
+    return 4
+  }
   const config = loadConfig(configPath)
   const target = spareSlot(config)
   if (!slotExists(config, target)) {
@@ -261,5 +266,6 @@ export async function runRollback(args: readonly string[], options: RunOptions):
   }
   return executeSwitch(config, target, tag, noStart)
 }
+
 
 

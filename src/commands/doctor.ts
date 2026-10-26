@@ -8,10 +8,10 @@
  * @module dsh-upgrade/commands/doctor
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadConfig, resolveConfigPath, saveConfig } from '../engine/config.ts'
+import { loadConfig, resolveConfigPath } from '../engine/config.ts'
 import { describeLink } from '../engine/link.ts'
 import { pnpmInvocation } from '../engine/pnpm.ts'
 import { portOwner } from '../engine/service.ts'
@@ -72,6 +72,20 @@ function probesOf(options: RunOptions): { probes: Probe[], configPath: string, c
   const configPath = resolveConfigPath(options.configPath, options.cwd, options.toolRoot)
   const config = existsSync(configPath) ? loadConfig(configPath) : undefined
   const probes: Probe[] = []
+  probes.push({
+    id: 'config',
+    ok: config !== undefined,
+    detail: config !== undefined ? `configuration at ${configPath}` : `no configuration at ${configPath}`,
+    nextAction: 'run "dsh-upgrade init"',
+    blocking: true,
+  })
+  probes.push({
+    id: 'config',
+    ok: config !== undefined,
+    detail: config !== undefined ? `configuration at ${configPath}` : `no configuration at ${configPath}`,
+    nextAction: 'run "dsh-upgrade init"',
+    blocking: true,
+  })
 
   const pwsh = probeCommand('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'])
   probes.push({
@@ -117,7 +131,7 @@ function probesOf(options: RunOptions): { probes: Probe[], configPath: string, c
         ...owner === undefined ? {} : { nextAction: `change ${id} in the configuration or stop pid ${owner}` },
       })
     }
-    const free = spawnSync('node', ['-e', "const s=require('node:fs').statfsSync(process.argv[1]);process.stdout.write(String(Math.round(s.bavail*s.bsize/1e9)))", config.root], { encoding: 'utf8' })
+    const free = spawnSync(process.execPath, ['-e', "const s=require('node:fs').statfsSync(process.argv[1]);process.stdout.write(String(Math.round(s.bavail*s.bsize/1e9)))", config.root], { encoding: 'utf8' })
     const gigabytes = Number.parseInt(free.stdout ?? '0', 10)
     probes.push({ id: 'disk', ok: gigabytes >= 10, detail: `${gigabytes} GB free at ${config.root}`, nextAction: 'free at least 10 GB for two slots', blocking: false })
     probes.push(protectionProbe())
@@ -157,7 +171,11 @@ export function runDoctor(args: readonly string[], options: RunOptions): number 
   if (fix && config !== undefined) {
     const protection = probes.find(probe => probe.id === 'protection-driver')
     if (protection !== undefined && !protection.ok && !config.manualBuild) {
-      saveConfig(configPath, { ...config, manualBuild: true })
+      // Patch only this key: rewriting the parsed config would drop fields this build does not know.
+      const raw = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>
+      raw['manualBuild'] = true
+      writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}
+`, 'utf8')
       process.stdout.write('set manualBuild: true — build from an administrator console\n')
     }
   }
@@ -175,3 +193,4 @@ export function runDoctor(args: readonly string[], options: RunOptions): number 
   }
   return blocking.length === 0 ? 0 : 4
 }
+
