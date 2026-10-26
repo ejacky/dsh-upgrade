@@ -9,7 +9,7 @@
  * @module dsh-upgrade/commands/apply
  */
 import { spawn } from 'node:child_process'
-import { existsSync, openSync, closeSync } from 'node:fs'
+import { existsSync, openSync, closeSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig, resolveConfigPath } from '../engine/config.ts'
 import { describeLink, setLink } from '../engine/link.ts'
@@ -150,7 +150,21 @@ async function executeSwitch(config: Parameters<typeof waitForService>[0], targe
     process.stderr.write(`dsh-upgrade apply: ${outcome.error ?? 'switch failed'}\n`)
     return 4
   }
-  const record: SlotRecord = { tag, slot: target, at: new Date().toISOString() }
+  // Keep the client metadata `stage` recorded: `status` reports the serving build's frontend.
+  const buildRecord = join(slotPath(config, target), '.dsh-build', 'client-build-environment.json')
+  let client: { clientVersion?: string, clientArtifacts?: number } = {}
+  if (existsSync(buildRecord)) {
+    try {
+      const parsed = JSON.parse(readFileSync(buildRecord, 'utf8')) as { environment?: { DSH_CLIENT_VERSION?: unknown }, artifacts?: { fileCount?: unknown } }
+      const version = parsed.environment?.DSH_CLIENT_VERSION
+      const count = parsed.artifacts?.fileCount
+      if (typeof version === 'string') client = { ...client, clientVersion: version }
+      if (typeof count === 'number') client = { ...client, clientArtifacts: count }
+    } catch {
+      // A malformed record only costs the display fields.
+    }
+  }
+  const record: SlotRecord = { tag, slot: target, at: new Date().toISOString(), ...client }
   writeState(statePath, withDeployed(state, record))
   process.stdout.write(`serving ${tag} from slot ${target}\n`)
   return 0
@@ -266,6 +280,7 @@ export async function runRollback(args: readonly string[], options: RunOptions):
   }
   return executeSwitch(config, target, tag, noStart)
 }
+
 
 
 

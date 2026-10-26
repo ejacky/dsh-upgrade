@@ -142,9 +142,13 @@ export async function runToggle(args: readonly string[], options: RunOptions): P
   }
   if (!yes) {
     process.stdout.write(`DeepSeek Harness is running on ${context.config.webPort}. Stop it? [y/N] `)
-    const answer = await new Promise<string>(resolve => {
-      process.stdin.once('data', chunk => resolve(String(chunk).trim().toLowerCase()))
-    })
+    // A shortcut has nobody at the keyboard: give the answer a deadline and treat silence as "keep".
+    const answer = await Promise.race([
+      new Promise<string>(resolve => {
+        process.stdin.once('data', chunk => resolve(String(chunk).trim().toLowerCase()))
+      }),
+      new Promise<string>(resolve => { setTimeout(() => resolve(''), 20_000) }),
+    ])
     if (answer !== 'y' && answer !== 'yes') {
       process.stdout.write('kept running\n')
       return 0
@@ -232,5 +236,6 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
   ].join('\n') + '\n')
   return 0
 }
+
 
 

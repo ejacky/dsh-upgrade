@@ -42,3 +42,20 @@ test('doctor --fix sets manualBuild when the protection driver refuses the delet
   const config = JSON.parse(readFileSync(join(root, 'dsh-upgrade.json'), 'utf8')) as { manualBuild: boolean }
   assert.equal(config.manualBuild, true)
 })
+
+test('doctor reports a missing configuration as blocking', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-upgrade-doctor-nocfg-'))
+  const result = run(['doctor', '--json'], dir)
+  assert.equal(result.status, 4)
+  const report = JSON.parse(result.stdout) as { ok: boolean, blocking: string[] }
+  assert.equal(report.ok, false)
+  assert.ok(report.blocking.includes('config'))
+})
+
+test('doctor --fix keeps keys this build does not know', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-upgrade-doctor-keep-'))
+  writeFileSync(join(root, 'dsh-upgrade.json'), `${JSON.stringify({ schema: 1, root, webPort: 39875, smokePort: 39876, future: 1 }, null, 2)}\n`, 'utf8')
+  run(['doctor', '--fix'], root)
+  const config = JSON.parse(readFileSync(join(root, 'dsh-upgrade.json'), 'utf8')) as { future?: number, manualBuild?: boolean }
+  assert.equal(config.future, 1)
+})
