@@ -52,7 +52,7 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   version: {
     summary: 'print this tool version',
     implemented: true,
-    run: (args, options) => printVersion(options),
+    run: (_args, options) => printVersion(options),
   },
   init: {
     summary: 'create the dual-slot layout, the stable-path link, and the config file',
