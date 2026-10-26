@@ -158,7 +158,7 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
     progress(`preparing ${target} in slot ${slot}`)
     ensureCheckout(config, slot, target, progress)
 
-    const patches = applyPatches(config, directory, options.toolRoot, progress)
+    const patches = applyPatches(config, directory, options.toolRoot, progress, target)
     if (!patches.ok) return fail(3, patches.error ?? 'patch failed')
 
     if (!flags.skipInstall) {
@@ -193,7 +193,16 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
     state = { ...state, staged: record, lastError: null }
     writeState(statePath, state)
     if (options.json) {
-      process.stdout.write(`${JSON.stringify({ ok: true, tag: target, slot, smoke: true, clientVersion: record.clientVersion ?? null, clientArtifacts: record.clientArtifacts ?? null, nextAction: 'apply' })}\n`)
+      process.stdout.write(`${JSON.stringify({
+        ok: true,
+        tag: target,
+        slot,
+        smoke: true,
+        clientVersion: record.clientVersion ?? null,
+        clientArtifacts: record.clientArtifacts ?? null,
+        patches: { applied: patches.applied, alreadyApplied: patches.alreadyApplied },
+        nextAction: 'apply',
+      })}\n`)
     } else {
       process.stdout.write(`staged ${target} in slot ${slot} (smoke passed)\nNext: dsh-upgrade apply\n`)
     }

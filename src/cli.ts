@@ -21,6 +21,7 @@ import { runCheck } from './commands/check.ts'
 import { runDoctor } from './commands/doctor.ts'
 import { runShortcuts, runStart, runStop, runToggle } from './commands/power.ts'
 import { runInit } from './commands/init.ts'
+import { runPatch } from './commands/patch.ts'
 import { runStage } from './commands/stage.ts'
 import { runStatus } from './commands/status.ts'
 
@@ -108,7 +109,12 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     usage: '[install|remove|status|disable]',
     implemented: false,
   },
-  patch: { summary: 'list, verify, add, or remove source patches', usage: '[list|verify|add|remove]', implemented: false },
+  patch: {
+    summary: 'list, verify, add, or remove source patches',
+    usage: '[list|verify|add|remove]',
+    implemented: true,
+    run: runPatch,
+  },
   shortcuts: {
     summary: 'create or remove the desktop launchers',
     usage: '[--install|--remove]',

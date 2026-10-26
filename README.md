@@ -2,10 +2,12 @@
 
 Zero-downtime upgrades for a **DeepSeek Harness source checkout** on Windows.
 
-> **Status: M4.** Implemented: `version`, `init`, `status`, `check`, `stage` (clone/worktree,
-> uncommitted-change rescue, patches, install with stale-layout retry, build, isolated
-> `DSH_HOME` smoke, staged record, single-writer lock). Remaining v1 commands are listed by
-> `--help` and exit with `5` (not implemented) until their milestone lands.
+> **Status: M6.** Implemented: `version`, `init`, `status`, `check`, `stage` (clone/worktree,
+> uncommitted-change rescue, patches with a reverse check, install with stale-layout retry,
+> build, isolated `DSH_HOME` smoke, staged record, single-writer lock), `apply`/`rollback`,
+> `toggle`/`start`/`stop`, `shortcuts`, `doctor`, and `patch list|verify|add|remove`.
+> Remaining v1 commands are listed by `--help` and exit with `5` (not implemented) until
+> their milestone lands.
 
 ## Who this is for
 

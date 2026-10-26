@@ -1,0 +1,272 @@
+/**
+ * `patch`: the configured patch list, checked against a real checkout.
+ *
+ * Every test drives the CLI against a throwaway repository so the behaviour under test is
+ * the behaviour an operator gets: which patches are configured, whether they still apply,
+ * and that a patch which no longer applies stops a stage instead of shipping.
+ *
+ * @module dsh-upgrade/tests/patch
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const repoRoot = join(import.meta.dirname, '..')
+const cliPath = join(repoRoot, 'src', 'cli.ts')
+
+/** Run the CLI and capture its streams and exit code. */
+function run(args: readonly string[], cwd: string, env: Record<string, string> = {}): { status: number, stdout: string, stderr: string } {
+  const result = spawnSync(process.execPath, [cliPath, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...env } })
+  assert.equal(result.error, undefined, `spawn failed: ${String(result.error)}`)
+  return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr }
+}
+
+/** Run git, failing the test on error. */
+function git(args: readonly string[], cwd: string): void {
+  const result = spawnSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@localhost', ...args], { cwd, encoding: 'utf8' })
+  assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`)
+}
+
+/** The stand-in package manager: staging must never reach a real install in these tests. */
+const FAKE_PNPM = `
+console.error('fake pnpm: no install expected in the patch tests')
+process.exit(1)
+`
+
+/** Paths a patch test needs. */
+interface Fixture {
+  readonly root: string
+  readonly slot: string
+  readonly manifest: string
+  readonly good: string
+  readonly conflict: string
+  readonly configPath: string
+}
+
+/**
+ * Build a throwaway layout: one upstream tag, one slot at that tag, one applicable patch,
+ * one conflicting patch, and a catalog that names both.
+ * @param patchFiles - patch list to write into the configuration.
+ */
+function fixture(patchFiles: readonly string[] = []): Fixture {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-upgrade-patch-'))
+  const origin = join(root, 'origin')
+  mkdirSync(origin, { recursive: true })
+  git(['init', '-b', 'main'], origin)
+  writeFileSync(join(origin, 'file.txt'), 'one\n', 'utf8')
+  git(['add', '.'], origin)
+  git(['commit', '-m', 'initial'], origin)
+  git(['tag', 'dsh-v0.2.1-rc.3'], origin)
+
+  const slot = join(root, 'dsh-slots', 'a')
+  mkdirSync(join(root, 'dsh-slots'), { recursive: true })
+  git(['clone', origin, slot], root)
+  git(['checkout', '--detach', 'dsh-v0.2.1-rc.3'], slot)
+
+  const good = join(root, 'good.patch')
+  writeFileSync(good, [
+    'diff --git a/file.txt b/file.txt',
+    '--- a/file.txt',
+    '+++ b/file.txt',
+    '@@ -1 +1 @@',
+    '-one',
+    '+two',
+    '',
+  ].join('\n'), 'utf8')
+  const conflict = join(root, 'conflict.patch')
+  writeFileSync(conflict, [
+    'diff --git a/file.txt b/file.txt',
+    '--- a/file.txt',
+    '+++ b/file.txt',
+    '@@ -1 +1 @@',
+    '-nothing',
+    '+something',
+    '',
+  ].join('\n'), 'utf8')
+
+  const manifest = join(root, 'manifest.json')
+  writeFileSync(manifest, `${JSON.stringify({
+    schema: 1,
+    patches: [
+      { name: 'good', file: good, summary: 'renames the marker', verifiedTags: ['dsh-v0.2.1-rc.3'] },
+      { name: 'broken', file: conflict, summary: 'a patch that no longer applies', obsoleteSince: 'dsh-v9.0.0' },
+    ],
+  }, null, 2)}\n`, 'utf8')
+
+  const configPath = join(root, 'dsh-upgrade.json')
+  writeFileSync(configPath, `${JSON.stringify({
+    schema: 1,
+    root,
+    upstream: origin,
+    tagPattern: 'dsh-v*',
+    patchFiles,
+    keepMe: { untouched: true },
+  }, null, 2)}\n`, 'utf8')
+  return { root, slot, manifest, good, conflict, configPath }
+}
+
+/** Read the configuration file as raw JSON. */
+function readConfig(path: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+}
+
+test('patch list shows catalogued and configured patches as JSON', () => {
+  const { root, manifest } = fixture()
+  const listed = run(['patch', 'list', '--json', '--manifest', manifest], root)
+  assert.equal(listed.status, 0, listed.stderr)
+  const report = JSON.parse(listed.stdout) as {
+    manifest: { present: boolean, count: number }
+    active: string[]
+    patches: { name: string, active: boolean, exists: boolean, verifiedTags: string[], obsoleteSince: string | null }[]
+  }
+  assert.equal(report.manifest.present, true)
+  assert.equal(report.manifest.count, 2)
+  assert.deepEqual(report.active, [])
+  assert.deepEqual(report.patches.map(patch => patch.name), ['good', 'broken'])
+  assert.equal(report.patches[0]?.active, false)
+  assert.equal(report.patches[0]?.exists, true)
+  assert.deepEqual(report.patches[0]?.verifiedTags, ['dsh-v0.2.1-rc.3'])
+  assert.equal(report.patches[1]?.obsoleteSince, 'dsh-v9.0.0')
+})
+
+test('patch add and remove touch only patchFiles and are idempotent', () => {
+  const { root, manifest, good } = fixture()
+  const added = run(['patch', 'add', 'good', '--json', '--manifest', manifest], root)
+  assert.equal(added.status, 0, added.stderr)
+  const first = JSON.parse(added.stdout) as { file: string, patchFiles: string[] }
+  assert.deepEqual(first.patchFiles, [good])
+
+  const again = run(['patch', 'add', 'good', '--json', '--manifest', manifest], root)
+  assert.equal(again.status, 0, again.stderr)
+  assert.equal((JSON.parse(again.stdout) as { alreadyActive: boolean }).alreadyActive, true)
+
+  const config = readConfig(join(root, 'dsh-upgrade.json'))
+  assert.deepEqual(config['patchFiles'], [good])
+  assert.deepEqual(config['keepMe'], { untouched: true }, 'unknown keys must survive an edit')
+
+  const removed = run(['patch', 'remove', 'good', '--json', '--manifest', manifest], root)
+  assert.equal(removed.status, 0, removed.stderr)
+  assert.deepEqual((JSON.parse(removed.stdout) as { patchFiles: string[] }).patchFiles, [])
+  const twice = run(['patch', 'remove', 'good', '--json', '--manifest', manifest], root)
+  assert.equal(twice.status, 0, twice.stderr)
+  assert.equal((JSON.parse(twice.stdout) as { wasActive: boolean }).wasActive, false)
+})
+
+test('patch add accepts a patch path outside the catalog and rejects a non-patch', () => {
+  const { root, good } = fixture()
+  const added = run(['patch', 'add', '--file', good, '--json'], root)
+  assert.equal(added.status, 0, added.stderr)
+  assert.deepEqual(readConfig(join(root, 'dsh-upgrade.json'))['patchFiles'], [good])
+
+  const notes = join(root, 'notes.txt')
+  writeFileSync(notes, 'just text\n', 'utf8')
+  const rejected = run(['patch', 'add', '--file', notes], root)
+  assert.equal(rejected.status, 2)
+  assert.match(rejected.stderr, /does not look like a git patch/)
+
+  const absent = run(['patch', 'add', '--file', join(root, 'absent.patch')], root)
+  assert.equal(absent.status, 2)
+  assert.match(absent.stderr, /no patch file at/)
+})
+
+test('patch verify reports applies, applied, and conflict against the serving tree', () => {
+  const { root, manifest, good } = fixture()
+  const applicable = run(['patch', 'verify', '--json', '--manifest', manifest], root)
+  assert.equal(applicable.status, 0, applicable.stderr)
+  assert.deepEqual((JSON.parse(applicable.stdout) as { checks: { state: string }[] }).checks, [])
+
+  const added = run(['patch', 'add', 'good', '--json', '--manifest', manifest], root)
+  assert.equal(added.status, 0, added.stderr)
+  const applies = run(['patch', 'verify', '--json', '--manifest', manifest], root)
+  assert.equal(applies.status, 0, applies.stderr)
+  const appliesReport = JSON.parse(applies.stdout) as { ok: boolean, tree: { slot: string, tag: string }, checks: { name: string, state: string }[] }
+  assert.equal(appliesReport.tree.slot, 'a')
+  assert.equal(appliesReport.tree.tag, 'dsh-v0.2.1-rc.3')
+  assert.equal(appliesReport.checks[0]?.state, 'applies')
+
+  git(['apply', good], join(root, 'dsh-slots', 'a'))
+  const already = run(['patch', 'verify', '--json', '--manifest', manifest], root)
+  assert.equal(already.status, 0, already.stderr)
+  assert.equal((JSON.parse(already.stdout) as { checks: { state: string }[] }).checks[0]?.state, 'applied')
+
+  const added2 = run(['patch', 'add', 'broken', '--json', '--manifest', manifest], root)
+  assert.equal(added2.status, 0, added2.stderr)
+  const conflicted = run(['patch', 'verify', '--json', '--manifest', manifest], root)
+  assert.equal(conflicted.status, 3)
+  const conflictReport = JSON.parse(conflicted.stdout) as { ok: boolean, checks: { name: string, state: string }[] }
+  assert.equal(conflictReport.ok, false)
+  assert.deepEqual(conflictReport.checks.map(check => check.state), ['applied', 'conflict'])
+})
+
+test('patch verify --all includes catalog entries that are not applied', () => {
+  const { root, manifest } = fixture()
+  const verified = run(['patch', 'verify', '--all', '--json', '--manifest', manifest], root)
+  assert.equal(verified.status, 3, verified.stderr)
+  const report = JSON.parse(verified.stdout) as { checks: { name: string, active: boolean, state: string }[] }
+  assert.deepEqual(report.checks.map(check => check.active), [false, false])
+  assert.deepEqual(report.checks.map(check => check.state), ['applies', 'conflict'])
+})
+
+test('patch verify without a checkout asks for a stage instead of guessing', () => {
+  const { root, manifest } = fixture()
+  rmSync(join(root, 'dsh-slots'), { recursive: true, force: true })
+  const verified = run(['patch', 'verify', '--json', '--manifest', manifest], root)
+  assert.equal(verified.status, 4)
+  assert.match(verified.stderr, /no slot checkout under/)
+})
+
+test('a configured patch that conflicts stops stage and records the reason', () => {
+  const { root, conflict } = fixture()
+  const added = run(['patch', 'add', '--file', conflict, '--json'], root)
+  assert.equal(added.status, 0, added.stderr)
+  const fakePnpm = join(root, 'fake-pnpm.mjs')
+  writeFileSync(fakePnpm, FAKE_PNPM, 'utf8')
+  const staged = run(['stage', '--json'], root, { DSH_UPGRADE_PNPM_JS: fakePnpm })
+  assert.equal(staged.status, 3, staged.stderr)
+  const report = JSON.parse(staged.stdout) as { ok: boolean, error: string, nextAction: string }
+  assert.equal(report.ok, false)
+  assert.match(report.error, /does not apply to dsh-v0\.2\.1-rc\.3/)
+  assert.match(report.error, /patch remove/)
+  assert.equal(report.nextAction, 'human')
+  const state = JSON.parse(readFileSync(join(root, 'state', 'upgrade-state.json'), 'utf8')) as { staged: unknown, lastError: string }
+  assert.equal(state.staged, null)
+  assert.match(state.lastError, /does not apply/)
+  assert.equal(existsSync(join(root, 'dsh-slots', 'a', '.dsh-build')), false)
+})
+
+test('a malformed catalog is reported rather than ignored', () => {
+  const { root } = fixture()
+  const broken = join(root, 'broken-manifest.json')
+  writeFileSync(broken, `${JSON.stringify({
+    schema: 1,
+    patches: [
+      { name: 'dupe', file: 'a.patch', summary: 'first' },
+      { name: 'dupe', file: 'b.patch', summary: 'second' },
+    ],
+  })}\n`, 'utf8')
+  const listed = run(['patch', 'list', '--manifest', broken], root)
+  assert.equal(listed.status, 4)
+  assert.match(listed.stderr, /duplicate patch name "dupe"/)
+  assert.ok(!listed.stderr.includes('    at '), 'no stack trace for a bad catalog')
+
+  const wrongSchema = join(root, 'schema-2.json')
+  writeFileSync(wrongSchema, '{"schema":2,"patches":[]}\n', 'utf8')
+  const rejected = run(['patch', 'list', '--manifest', wrongSchema], root)
+  assert.equal(rejected.status, 4)
+  assert.match(rejected.stderr, /unsupported "schema"/)
+})
+
+test('an unknown verb or a missing configuration is reported with the documented code', () => {
+  const { root } = fixture()
+  const unknown = run(['patch', 'frobnicate'], root)
+  assert.equal(unknown.status, 2)
+  assert.match(unknown.stderr, /unknown patch command "frobnicate"/)
+
+  const uninitialized = mkdtempSync(join(tmpdir(), 'dsh-upgrade-patch-nocfg-'))
+  const missing = run(['patch', 'list'], uninitialized)
+  assert.equal(missing.status, 4)
+  assert.match(missing.stderr, /run "dsh-upgrade init"/)
+})

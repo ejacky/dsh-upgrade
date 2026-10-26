@@ -18,6 +18,7 @@
     "src",
     "engine-ps",
     "templates",
+    "patches",
     "plugins",
     "docs",
     "version.json",
