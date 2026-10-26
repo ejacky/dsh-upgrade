@@ -284,7 +284,16 @@ function usageError(message: string): number {
   return EXIT.usage
 }
 
-if (import.meta.main) process.exit(await main(process.argv.slice(2)))
+if (import.meta.main) {
+  // Nothing may escape as a stack trace: the tray, the scheduled task, and `setup.cmd` branch on
+  // the documented exit codes, and a raw exception tells them nothing.
+  try {
+    process.exitCode = await main(process.argv.slice(2))
+  } catch (error) {
+    process.stderr.write(`dsh-upgrade: ${(error as Error).message}\n`)
+    process.exitCode = EXIT.probe
+  }
+}
 
 
 

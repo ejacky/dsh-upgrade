@@ -7,14 +7,16 @@
  *
  * @module dsh-upgrade/commands/stage
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { loadConfig, resolveConfigPath, type Config } from '../engine/config.ts'
+import { describeLink } from '../engine/link.ts'
+import { portOwner } from '../engine/service.ts'
 import { fetchTags, listTags, lsRemoteTags, tagsAtHead } from '../engine/git.ts'
 import { acquireLock } from '../engine/lock.ts'
 import { applyPatches } from '../engine/patches.ts'
 import { build, install } from '../engine/pnpm.ts'
-import { newestTag } from '../engine/semver.ts'
+import { compareVersions, globMatches, newestTag, parseTag } from '../engine/semver.ts'
 import { smoke } from '../engine/smoke.ts'
 import { activeSlot, slotExists, slotPath, spareSlot, type SlotName } from '../engine/slots.ts'
 import { readState, statePathOf, writeState, type SlotRecord } from '../engine/state.ts'
@@ -146,6 +148,18 @@ async function resumeBuild(config: Config, statePath: string, options: RunOption
   if (!existsSync(join(directory, '.dsh-build', 'client-build-environment.json'))) {
     return fail(3, 'the build has not finished: no .dsh-build record; run the build in an administrator console')
   }
+  // The build record is untracked, so it survives a checkout of a different tag. `stage` deletes
+  // it when it writes the request; this timestamp check catches a record that is older than the
+  // request for any other reason (a restored folder, a hand-written request).
+  try {
+    const recordAge = statSync(join(directory, '.dsh-build', 'client-build-environment.json')).mtimeMs
+    const requestAge = statSync(join(config.root, 'state', BUILD_REQUEST_FILENAME)).mtimeMs
+    if (recordAge + 1000 < requestAge) {
+      return fail(3, 'the build record is older than the request; run the build again in an administrator console')
+    }
+  } catch (error) {
+    return fail(3, `the build request could not be checked: ${(error as Error).message}`)
+  }
   const progress = (line: string): void => { if (!options.json) process.stderr.write(`${line}\n`) }
   progress(`smoke testing the built ${request.tag} in slot ${request.slot}`)
   const smoked = await smoke(config, directory, join(config.root, 'logs', `smoke-${request.tag}.log`), progress)
@@ -209,6 +223,16 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
     if (resolve(directory) !== resolve(config.slotsRoot, slot)) return fail(3, `refusing to write ${directory}`)
     if (!resolve(directory).startsWith(`${resolve(config.slotsRoot)}${sep}`)) return fail(3, `slot path escapes ${config.slotsRoot}`)
     if (active === slot) return fail(3, `spare slot resolved to the serving slot (${slot})`)
+    // `spareSlot` falls back to `a` when the stable path is missing or is not a link. That is
+    // correct on a fresh machine, but if a server is already listening, its slot is unknown and
+    // writing to `a` could be writing to the tree that server is running from.
+    const link = describeLink(config.stablePath)
+    if (link.kind === 'directory') {
+      return fail(3, `${config.stablePath} is a real directory; the tool only replaces a junction (move it aside and run "init")`)
+    }
+    if (active === undefined && portOwner(config.webPort) !== undefined) {
+      return fail(3, `something is serving on ${config.webPort} but ${config.stablePath} is not a slot junction; stop it or repair the link before staging`)
+    }
 
     if (flags.fetch) {
       const repo = slotExists(config, active === undefined ? 'a' : active) ? slotPath(config, active === undefined ? 'a' : active) : undefined
@@ -225,12 +249,30 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
     const tags = localRepo === undefined ? lsRemoteTags(config.upstream, config.root) : listTags(localRepo, config.tagPattern)
     const target = flags.tag ?? newestTag(tags, config.tagPattern)?.tag
     if (target === undefined) return fail(4, `no tag matching ${config.tagPattern} in ${config.slotsRoot}`)
+    if (flags.tag !== undefined) {
+      if (!globMatches(config.tagPattern, flags.tag)) {
+        return fail(2, `--tag ${flags.tag} does not match ${config.tagPattern}`)
+      }
+      const deployed = state.deployed
+      if (deployed !== null && !flags.force) {
+        const requested = parseTag(target, config.tagPattern)
+        const current = parseTag(deployed.tag, config.tagPattern)
+        if (requested !== undefined && current !== undefined && compareVersions(requested, current) <= 0) {
+          return fail(3, `refusing to prepare ${target}: it is not newer than the deployed ${deployed.tag} (use --force to override)`)
+        }
+      }
+    }
 
-    // Reuse a slot only when nothing would have to change in it. A patch list can grow after
-    // a slot was prepared, and the prepared tree would not carry the new patch.
-    if (!flags.force && config.patchFiles.length === 0 && isPrepared(config, slot, target)) {
+    // Reuse a slot only when nothing would have to change in it: no patch can have been added
+    // since, and the state still records this exact version in this slot as staged.
+    const reused = !flags.force
+      && config.patchFiles.length === 0
+      && isPrepared(config, slot, target)
+      && state.staged?.tag === target
+      && state.staged?.slot === slot
+    if (reused) {
       progress(`slot ${slot} is already prepared at ${target}`)
-      state = { ...state, staged: { tag: target, slot, at: new Date().toISOString(), smoke: true, ...clientRecordOf(directory) } as SlotRecord, lastError: null }
+      state = { ...state, staged: { ...state.staged, at: new Date().toISOString() } as SlotRecord, lastError: null }
       writeState(statePath, state)
       if (options.json) process.stdout.write(`${JSON.stringify({ ok: true, tag: target, slot, alreadyPrepared: true })}\n`)
       return 0
@@ -251,6 +293,9 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
 
     if (!flags.skipBuild) {
       if (config.manualBuild) {
+        // A build record from an earlier tag survives `checkout --force`; drop it so `--resume`
+        // can only ever smoke the build this request asks for.
+        rmSync(join(directory, '.dsh-build'), { recursive: true, force: true })
         mkdirSync(join(config.root, 'state'), { recursive: true })
         writeFileSync(join(config.root, 'state', BUILD_REQUEST_FILENAME), `${JSON.stringify({ tag: target, slot, at: new Date().toISOString() }, null, 2)}\n`, 'utf8')
         return fail(3, `this machine builds only from an administrator console; run the build there or set manualBuild=false`)

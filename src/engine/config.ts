@@ -23,6 +23,8 @@ export interface OpencodeSessionConfig {
   readonly enabled: boolean
   /** `builtin` uses the vendored plugin; `npm` uses the published package. */
   readonly source: OpencodeSessionSource
+  /** Range or exact version installed when `source` is `npm`. */
+  readonly npmVersion: string
   /** Header name the gateway expects. */
   readonly header: string
   /** URL substrings that identify the gateway; matched case-insensitively. */
@@ -74,6 +76,13 @@ const STRING = (value: unknown, field: string): string => {
   return value
 }
 
+const CONCURRENCY = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 64) {
+    throw new Error('config: "buildGateConcurrency" must be an integer between 1 and 64')
+  }
+  return value
+}
+
 /**
  * Build a complete configuration from a partial one.
  * @param input - at minimum `root`; omitted keys take defaults.
@@ -97,6 +106,7 @@ export function defaultConfig(input: ConfigInput): Config {
     opencodeSession: {
       enabled: session?.enabled ?? true,
       source: session?.source ?? 'builtin',
+      npmVersion: session?.npmVersion ?? '^0.1.0',
       header: session?.header ?? 'x-opencode-session',
       urlMarkers: session?.urlMarkers ?? ['opencode.ai'],
     },
@@ -134,10 +144,17 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
   }
   const schema = record['schema']
   if (schema !== undefined && schema !== 1) throw new Error('config: unsupported "schema" (expected 1)')
+  const stablePath = absolute(record['stablePath'], 'stablePath', join(root, 'deepseek-harness'))
+  const slotsRoot = absolute(record['slotsRoot'], 'slotsRoot', join(root, 'dsh-slots'))
+  // A slots root inside the stable path would make every slot write go through the junction the
+  // tool switches, so the "never touch the serving slot" guards could no longer tell them apart.
+  const nested = (outer: string, inner: string): boolean => inner === outer || inner.startsWith(`${outer}\\`) || inner.startsWith(`${outer}/`)
+  if (nested(stablePath, slotsRoot)) throw new Error('config: "slotsRoot" must not be inside "stablePath"')
+  if (nested(slotsRoot, stablePath)) throw new Error('config: "stablePath" must not be inside "slotsRoot"')
   return defaultConfig({
     root,
-    stablePath: absolute(record['stablePath'], 'stablePath', join(root, 'deepseek-harness')),
-    slotsRoot: absolute(record['slotsRoot'], 'slotsRoot', join(root, 'dsh-slots')),
+    stablePath,
+    slotsRoot,
     ...record['upstream'] === undefined ? {} : { upstream: STRING(record['upstream'], 'upstream') },
     ...record['tagPattern'] === undefined ? {} : { tagPattern: STRING(record['tagPattern'], 'tagPattern') },
     webPort: record['webPort'] === undefined ? 3080 : PORT(record['webPort'], 'webPort'),
@@ -146,10 +163,11 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
     manualBuild: record['manualBuild'] === true,
     buildGateConcurrency: record['buildGateConcurrency'] === undefined
       ? 1
-      : PORT(record['buildGateConcurrency'], 'buildGateConcurrency'),
+      : CONCURRENCY(record['buildGateConcurrency']),
     opencodeSession: {
       enabled: session['enabled'] !== false,
       source: source ?? 'builtin',
+      npmVersion: session['npmVersion'] === undefined ? '^0.1.0' : STRING(session['npmVersion'], 'opencodeSession.npmVersion'),
       header: session['header'] === undefined ? 'x-opencode-session' : STRING(session['header'], 'opencodeSession.header'),
       urlMarkers: (markers as string[] | undefined) ?? ['opencode.ai'],
     },

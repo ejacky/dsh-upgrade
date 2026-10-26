@@ -5,7 +5,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Config } from './config.ts'
 
@@ -43,7 +43,7 @@ export function portOwner(port: number): number | undefined {
 /**
  * Stop whatever serves the web port.
  * @param port - web port.
- * @returns `true` when a process was asked to stop.
+ * @returns whether the port is free afterwards; `false` also means nothing listened.
  */
 export function stopService(port: number): boolean {
   const pid = portOwner(port)
@@ -53,7 +53,7 @@ export function stopService(port: number): boolean {
   } else {
     try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
   }
-  return true
+  return portOwner(port) === undefined
 }
 
 /** A started server. */
@@ -66,6 +66,10 @@ export interface StartedService {
 
 /**
  * Start a slot's built web app detached, so it outlives this process.
+ *
+ * The previous attempt's log is kept as `web-<port>.prev.log` before the new run truncates it:
+ * the readiness parser must not see a stale token, but the failure it described is the evidence
+ * an operator needs.
  * @param config - resolved tool configuration.
  * @param slotDirectory - the slot to serve.
  * @returns the started server handle.
@@ -75,7 +79,9 @@ export function startService(config: Config, slotDirectory: string): StartedServ
   const entry = join(slotDirectory, 'apps', 'cli', 'lib', 'bin.js')
   if (!existsSync(entry)) throw new Error(`built CLI entry missing: ${entry}`)
   const logPath = join(config.root, 'logs', `web-${config.webPort}.log`)
-  // Truncate: a token left by an earlier run must never be mistaken for this one's.
+  if (existsSync(logPath) && statSync(logPath).size > 0) {
+    renameSync(logPath, `${logPath}.prev.log`)
+  }
   const fd = openSync(logPath, 'w')
   try {
     const child = spawn(process.execPath, [entry, 'web', '--port', String(config.webPort), '--no-open'], {
@@ -94,24 +100,28 @@ export function startService(config: Config, slotDirectory: string): StartedServ
 /**
  * Wait until the web port answers.
  *
- * The tokenized URL from the log is preferred (plain `/` answers 401 by design); 401 on `/`
- * is accepted as "listening and serving".
+ * The tokenized URL from the log is preferred (plain `/` answers 401 by design) and proves the
+ * answering process was started with that token. A bare `/` answer is accepted only when the
+ * listener is the process this call started: otherwise an old build still holding the port would
+ * make a failed switch look successful.
  * @param config - resolved tool configuration.
  * @param logPath - the server log.
+ * @param expectedPid - the pid `startService` returned for this attempt.
  * @returns whether the server answered in time.
  */
-export async function waitForService(config: Config, logPath: string): Promise<boolean> {
+export async function waitForService(config: Config, logPath: string, expectedPid?: number): Promise<boolean> {
   const deadline = Date.now() + START_TIMEOUT_MS
   const bare = `http://127.0.0.1:${config.webPort}/`
   while (Date.now() < deadline) {
     let tokenised: string | undefined
     if (existsSync(logPath)) {
       const text = readFileSync(logPath, 'utf8')
-      // The last match belongs to the newest start; earlier starts are already truncated, but a
-      // supervisor or a second start could append, so take the tail deliberately.
+      // The log belongs to this attempt (each start rotates the previous one), so the last match
+      // is this run's token.
       tokenised = [...text.matchAll(/http:\/\/127\.0\.0\.1:(\d+)\/\?token=\S+/g)].at(-1)?.[0]
     }
-    for (const url of [tokenised, bare]) {
+    const ownedByThisStart = expectedPid !== undefined && portOwner(config.webPort) === expectedPid
+    for (const url of [tokenised, ownedByThisStart ? bare : undefined]) {
       if (url === undefined) continue
       try {
         const response = await fetch(url, { redirect: 'manual' })

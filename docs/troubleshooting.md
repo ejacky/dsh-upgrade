@@ -12,8 +12,9 @@ in an administrator console in that slot, then `dsh-upgrade stage --resume`. The
 for you when you accept its prompt.
 
 **"another layout action is running"** — `state\layout.lock` is held. Wait for the other action;
-if its process is gone the lock is reclaimed automatically after three hours. To reclaim earlier,
-delete the file after confirming no `stage`/`apply` is running.
+a lock whose process is gone is reclaimed at once, and one that is still held is reclaimed only
+after 24 hours. To reclaim earlier, delete the file after confirming no `stage`/`apply` is
+running.
 
 **"<patch> does not apply to <tag>"** — the patch needs a rebase. `dsh-upgrade patch verify`
 shows every patch's state; `dsh-upgrade patch remove <name>` drops one; a rebased file goes back

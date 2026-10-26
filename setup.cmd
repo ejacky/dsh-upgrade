@@ -1,21 +1,23 @@
 @echo off
 rem dsh-upgrade setup: unpack-and-run installation for a Windows machine.
 rem ASCII only: cmd.exe reads this file in the console code page.
+rem Every variable is read with !NAME! inside blocks: a path may contain & or ( ), and %NAME%
+rem would be expanded before cmd parses the block.
 rem
 rem usage: setup.cmd [root-dir]
 rem   root-dir  parent directory that will hold deepseek-harness and dsh-slots.
 rem             Defaults to the parent of this folder.
 setlocal EnableDelayedExpansion
 set "HERE=%~dp0"
-if "%HERE:~-1%"=="\" set "HERE=%HERE:~0,-1%"
+if "%HERE:~-1%"=="\" set "HERE=!HERE:~0,-1!"
 set "ROOT=%~1"
-if "%ROOT%"=="" for %%I in ("%HERE%\..") do set "ROOT=%%~fI"
-set "CONFIG=%HERE%\dsh-upgrade.json"
-set "CLI=%HERE%\src\cli.ts"
+if not defined ROOT for %%I in ("!HERE!\..") do set "ROOT=%%~fI"
+set "CONFIG=!HERE!\dsh-upgrade.json"
+set "CLI=!HERE!\src\cli.ts"
 
 echo dsh-upgrade setup
-echo   tool   %HERE%
-echo   root   %ROOT%
+echo   tool   !HERE!
+echo   root   !ROOT!
 echo.
 
 where node >nul 2>&1
@@ -32,18 +34,20 @@ if errorlevel 1 (
 echo   node   !NODEV!
 
 echo.
-if not exist "%CONFIG%" (
-  echo [1/4] creating the layout under %ROOT%
-  node "%CLI%" --config "%CONFIG%" init --root "%ROOT%"
-  if errorlevel 1 exit /b 1
-) else (
-  echo [1/4] keeping the existing configuration
-  echo        %CONFIG%
-)
+if not exist "!CONFIG!" goto create_layout
+echo [1/4] keeping the existing configuration
+echo        !CONFIG!
+goto check_machine
 
+:create_layout
+echo [1/4] creating the layout under !ROOT!
+node "!CLI!" --config "!CONFIG!" init --root "!ROOT!"
+if errorlevel 1 exit /b 1
+
+:check_machine
 echo.
 echo [2/4] checking the machine
-node "%CLI%" --config "%CONFIG%" doctor
+node "!CLI!" --config "!CONFIG!" doctor
 if errorlevel 1 (
   echo [!] doctor reported a blocking problem. Fix it and run this file again.
   exit /b 1
@@ -51,15 +55,15 @@ if errorlevel 1 (
 
 echo.
 echo [3/4] installing the gateway session plugin
-node "%CLI%" --config "%CONFIG%" opencode-session install
+node "!CLI!" --config "!CONFIG!" opencode-session install
 if errorlevel 1 (
-  echo [!] the plugin was not installed. Run "opencode-session install" after the first stage,
-  echo     because it needs a built harness under the stable path.
+  echo [!] the plugin was not installed. It needs a built harness under the stable path,
+  echo     so run "opencode-session install" again after the first "stage" and "apply".
 )
 
 echo.
 echo [4/4] creating the desktop launchers
-node "%CLI%" --config "%CONFIG%" shortcuts --install
+node "!CLI!" --config "!CONFIG!" shortcuts --install
 if errorlevel 1 (
   echo [!] the launchers were not created; the CLI still works.
 )
@@ -72,6 +76,6 @@ echo   apply          switch to it
 echo   task install   check for new versions every 20 minutes
 echo   tray           open the tray companion
 echo.
-echo Every command takes --config "%CONFIG%" when run from another folder.
+echo Every command takes --config "!CONFIG!" when run from another folder.
 echo.
 exit /b 0

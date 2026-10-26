@@ -24,17 +24,22 @@ and is not the serving slot before writing anything.
 ## One writer at a time
 
 `state\layout.lock` is an exclusive file with the owner's pid. `stage`, `apply --wait`, the
-detached `apply` worker, and `rollback` all take it. A stale lock (dead pid, older than three
-hours) is reclaimed; a live one makes the contender exit `3` immediately, which is what the tray
-shows as "another upgrade is running".
+detached `apply` worker, and `rollback` all take it. The lock is published atomically (a private
+temporary file hard-linked into place, so a contender cannot read a half-written lock), and
+releasing checks the file still names this process. A leftover lock is reclaimed immediately when
+its pid is gone, or after 24 hours if the pid was reused by an unrelated process; a live owner is
+never evicted. A contended run exits `3` at once, which the tray shows as "another upgrade is
+running".
 
 ## Upgrades are prepared, then switched
 
 1. `stage` clones or reuses the spare slot (a worktree of the other slot when one exists),
    rescues uncommitted changes to `rescued\`, applies configured patches, installs, builds, and
    smoke-tests the built entry on `smokePort` with an isolated `DSH_HOME`.
-2. `apply` validates the staged record, flips the junction, stops the server on `webPort`,
-   starts the new one, and waits for the URL the server prints.
+2. `apply` validates the staged record and that the slot is still at that tag, flips the
+   junction, stops the server on `webPort`, starts the new one, and waits for the URL that
+   server printed. A bare `/` answer only counts when the listener is the process `apply`
+   started, so an old build still holding the port cannot make a failed switch look successful.
 3. If anything fails, the junction goes back to the previous slot **and the previous server is
    restarted**, because a failed switch must not leave the machine with nothing serving.
 

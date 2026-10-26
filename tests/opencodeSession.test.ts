@@ -235,7 +235,7 @@ test('install from npm names the published package', () => {
   const report = JSON.parse(installed.stdout) as { kind: string, spec: string, source: string }
   assert.equal(report.source, 'npm')
   assert.equal(report.kind, 'npm')
-  assert.equal(report.spec, 'dsh-x-opencode-session@0.1.1')
+  assert.equal(report.spec, 'dsh-x-opencode-session@^0.1.0', 'npm installs the published upstream range, not the vendored bump')
 })
 
 test('remove drops the dependency and the override', () => {

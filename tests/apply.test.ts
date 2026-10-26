@@ -110,13 +110,71 @@ test('apply flips the stable path, serves the staged slot, and records it', asyn
   t.after(() => stopPort(webPort))
   const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000' }
   assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
-  assert.equal(run(['apply', '--wait', '--json'], root, env).status, 0)
+  const applied = run(['apply', '--wait', '--json'], root, env)
+  assert.equal(applied.status, 0)
+  const report = JSON.parse(applied.stdout) as { ok: boolean, tag: string, slot: string, started: boolean }
+  assert.equal(report.ok, true)
+  assert.equal(report.tag, 'dsh-v0.2.1-rc.2')
+  assert.equal(report.slot, 'a')
+  assert.equal(report.started, true)
   const after = state(root)
   assert.equal(after.deployed?.tag, 'dsh-v0.2.1-rc.2')
   assert.equal(after.deployed?.slot, 'a')
   assert.equal(after.staged, null)
   const response = await fetch(`http://127.0.0.1:${webPort}/`)
   assert.equal(response.status, 200)
+})
+
+test('the default apply returns as soon as it schedules the switch, and the switch happens', async (t) => {
+  const { root, fakePnpm, webPort } = await fixture()
+  t.after(() => stopPort(webPort))
+  const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000' }
+  assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
+
+  const scheduled = run(['apply', '--json'], root, env)
+  assert.equal(scheduled.status, 0, scheduled.stderr)
+  const report = JSON.parse(scheduled.stdout) as { ok: boolean, detached: boolean, tag: string, slot: string }
+  assert.equal(report.detached, true)
+  assert.equal(report.tag, 'dsh-v0.2.1-rc.2')
+
+  // The worker is a detached process: poll for the effect instead of assuming it happened.
+  let deployed: string | undefined
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    await new Promise(resolve => { setTimeout(resolve, 500) })
+    try {
+      deployed = state(root).deployed?.tag
+    } catch {
+      deployed = undefined
+    }
+    if (deployed === 'dsh-v0.2.1-rc.2') break
+  }
+  assert.equal(deployed, 'dsh-v0.2.1-rc.2', 'the detached worker must actually switch')
+  const response = await fetch(`http://127.0.0.1:${webPort}/`)
+  assert.equal(response.status, 200)
+})
+
+test('apply refuses a slot that was re-checked-out after staging', async (t) => {
+  const { root, fakePnpm, webPort } = await fixture()
+  t.after(() => stopPort(webPort))
+  const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000' }
+  assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
+
+  // A second release on its own commit, then the staged slot moved to it behind the tool's back.
+  const origin = join(root, 'origin')
+  writeFileSync(join(origin, 'file.txt'), 'next\n', 'utf8')
+  git(['add', '.'], origin)
+  git(['commit', '-m', 'next'], origin)
+  git(['tag', 'dsh-v0.2.1-rc.4'], origin)
+  const slot = join(root, 'dsh-slots', 'a')
+  git(['fetch', '--tags', '--quiet', origin], slot)
+  git(['checkout', '--detach', 'dsh-v0.2.1-rc.4'], slot)
+
+  const refused = run(['apply', '--wait', '--json'], root, env)
+  assert.equal(refused.status, 4)
+  const report = JSON.parse(refused.stdout) as { ok: boolean, error: string }
+  assert.equal(report.ok, false)
+  assert.match(report.error, /no longer at dsh-v0\.2\.1-rc\.2/)
+  assert.equal(state(root).deployed, null, 'nothing is recorded when the switch never happened')
 })
 
 test('a version that never answers is rolled back automatically', async (t) => {

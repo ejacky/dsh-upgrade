@@ -21,6 +21,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# A tray has no console: a terminating error before the message loop would otherwise vanish.
+trap {
+  try { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DeepSeek Harness') | Out-Null } catch { }
+  exit 1
+}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -86,7 +91,7 @@ function Invoke-CliSync {
   $stamp = [guid]::NewGuid().ToString('n')
   $outFile = Join-Path $tempDir "$stamp.out"
   $errFile = Join-Path $tempDir "$stamp.err"
-  $process = Start-Process -FilePath $Node -ArgumentList (@($Cli) + $Arguments | ForEach-Object { ConvertTo-Argument $_ }) -WindowStyle Hidden -PassThru `
+  $process = Start-Process -FilePath $Node -ArgumentList (@($Cli, '--config', $ConfigPath) + $Arguments | ForEach-Object { ConvertTo-Argument $_ }) -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $outFile -RedirectStandardError $errFile
   if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
     try { $process.Kill($true) } catch { }
@@ -148,7 +153,7 @@ function Start-CliJob {
   $stamp = [guid]::NewGuid().ToString('n')
   $outFile = Join-Path $tempDir "$stamp.out"
   $errFile = Join-Path $tempDir "$stamp.err"
-  $process = Start-Process -FilePath $Node -ArgumentList (@($Cli) + $Arguments | ForEach-Object { ConvertTo-Argument $_ }) -WindowStyle Hidden -PassThru `
+  $process = Start-Process -FilePath $Node -ArgumentList (@($Cli, '--config', $ConfigPath) + $Arguments | ForEach-Object { ConvertTo-Argument $_ }) -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $outFile -RedirectStandardError $errFile
   $script:job = [pscustomobject]@{ Kind = $Kind; Label = $Label; Process = $process; Out = $outFile; Err = $errFile }
   Set-MenuState
@@ -207,13 +212,14 @@ function Complete-Job {
       } else {
         $requestPath = Join-Path (Join-Path $root 'state') 'build-request.json'
         if ($exit -eq 3 -and (Test-Path -LiteralPath $requestPath)) {
+          # A modal prompt from a timer tick has no owner window and stops the job poller, so the
+          # build it asks about could never start. Offer it as a menu entry instead.
           $request = Get-Content -LiteralPath $requestPath -Raw | ConvertFrom-Json
-          $answer = [System.Windows.Forms.MessageBox]::Show(
-            "这台机器只能在管理员控制台构建 $([string]$request.tag)。现在打开管理员窗口构建吗？",
-            'DeepSeek Harness', 'YesNo', 'Question')
-          if ($answer -eq [System.Windows.Forms.DialogResult]::Yes) {
-            Start-ElevatedBuild -Slot ([string]$request.slot) -Tag ([string]$request.tag)
-          }
+          $script:pendingBuild = $request
+          $script:buildItem.Text = "以管理员身份构建 $([string]$request.tag)"
+          $script:buildItem.Visible = $true
+          $script:buildItem.Enabled = $true
+          Show-Balloon "这台机器只能在管理员控制台构建 $([string]$request.tag)；右键图标选“以管理员身份构建”。" -Icon Warning
         } else {
           Show-Balloon "准备失败：$(Get-FailureText ([pscustomobject]@{ ExitCode = $exit; Out = $out; Err = $err }))" -Icon Error
         }
@@ -333,11 +339,23 @@ $script:statusItem.Enabled = $false
 $script:errorItem = [System.Windows.Forms.ToolStripMenuItem]::new('')
 $script:errorItem.Enabled = $false
 $script:errorItem.Visible = $false
+$script:pendingBuild = $null
+$script:buildItem = [System.Windows.Forms.ToolStripMenuItem]::new('以管理员身份构建')
+$script:buildItem.Visible = $false
+$script:buildItem.add_Click({
+  if ($null -eq $script:pendingBuild) { return }
+  $request = $script:pendingBuild
+  $script:pendingBuild = $null
+  $script:buildItem.Visible = $false
+  $script:buildItem.Enabled = $false
+  Start-ElevatedBuild -Slot ([string]$request.slot) -Tag ([string]$request.tag)
+})
 
 [void]$menu.Items.Add($script:openItem)
 [void]$menu.Items.Add([System.Windows.Forms.ToolStripSeparator]::new())
 [void]$menu.Items.Add($script:statusItem)
 [void]$menu.Items.Add($script:errorItem)
+[void]$menu.Items.Add($script:buildItem)
 [void]$menu.Items.Add([System.Windows.Forms.ToolStripSeparator]::new())
 [void]$menu.Items.Add($script:checkItem)
 [void]$menu.Items.Add($script:upgradeItem)
@@ -353,7 +371,8 @@ $dataItem.add_Click({ Invoke-OpenFolder -Path $root })
 $quitItem = [System.Windows.Forms.ToolStripMenuItem]::new('退出')
 $quitItem.add_Click({ Invoke-Quit })
 [void]$menu.Items.Add($quitItem)
-$menu.add_Opening({ Update-Status })
+# No $menu.add_Opening handler: it would run the CLI synchronously and freeze the message loop.
+# The tooltip is refreshed by the timer and after every action instead.
 
 $script:notify = [System.Windows.Forms.NotifyIcon]::new()
 $script:notify.Icon = [System.Drawing.SystemIcons]::Application

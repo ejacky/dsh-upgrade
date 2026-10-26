@@ -3,7 +3,8 @@
 `plugins/opencode-session` contains a modified copy of **dsh-x-opencode-session 0.1.0**,
 published by Coco-king (https://github.com/Coco-king/dsh-x-opencode-session, npm package
 `dsh-x-opencode-session@0.1.0`), licensed MIT. The upstream `LICENSE` file is included
-unchanged.
+unchanged; its copyright line names `codecrab`, the upstream package's licence holder, while the
+repository and the npm metadata name Coco-king.
 
 ## Why it is vendored
 
@@ -21,7 +22,9 @@ profile's `node_modules`.
 - Package version is `0.1.1` to distinguish the vendored build from the published `0.1.0`.
 
 Nothing else was changed: the fetch patch, the `llm/stream` listener, the session-context
-handling, and the disposal behaviour are the upstream implementation.
+handling, and the disposal behaviour are the upstream implementation. Between the two changes
+above, the module now also exports `normalizeConfig`, `DEFAULT_HEADER`, and `DEFAULT_MARKERS`, and
+holds the validated settings in module scope so the fetch patch reads them.
 
 ## Updating
 

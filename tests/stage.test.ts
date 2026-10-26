@@ -187,6 +187,27 @@ test('stage --resume without a request asks for a normal stage', () => {
   assert.match((JSON.parse(resumed.stdout) as { error: string }).error, /no build request/)
 })
 
+test('stage refuses a tag that is not newer than the deployed version', async () => {
+  const { root, fakePnpm } = await fixture()
+  mkdirSync(join(root, 'state'), { recursive: true })
+  writeFileSync(join(root, 'state', 'upgrade-state.json'), `${JSON.stringify({
+    schema: 1,
+    deployed: { tag: 'dsh-v0.2.1-rc.3', slot: 'a', at: new Date().toISOString() },
+    staged: null,
+    lastCheck: null,
+    lastError: null,
+    history: [],
+  }, null, 2)}\n`, 'utf8')
+
+  const refused = run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, { DSH_UPGRADE_PNPM_JS: fakePnpm })
+  assert.equal(refused.status, 3)
+  const report = JSON.parse(refused.stdout) as { ok: boolean, error: string }
+  assert.match(report.error, /not newer than the deployed dsh-v0\.2\.1-rc\.3/)
+
+  const forced = run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--force', '--json'], root, { DSH_UPGRADE_PNPM_JS: fakePnpm })
+  assert.equal(forced.status, 0, forced.stderr)
+})
+
 test('stage refuses to run without a configuration', () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-upgrade-nocfg-'))
   const result = run(['stage'], root)

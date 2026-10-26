@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { createServer } from 'node:net'
 import { join } from 'node:path'
 
 const repoRoot = join(import.meta.dirname, '..')
@@ -70,6 +71,19 @@ function fakePnpmIn(root: string): string {
   return path
 }
 
+/** A free localhost port, so a live server on the default port cannot confuse a stage. */
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address !== null ? address.port : 0
+      server.close(() => resolve(port))
+    })
+  })
+}
+
 /** Paths a patch test needs. */
 interface Fixture {
   readonly root: string
@@ -85,7 +99,7 @@ interface Fixture {
  * one conflicting patch, and a catalog that names both.
  * @param patchFiles - patch list to write into the configuration.
  */
-function fixture(patchFiles: readonly string[] = []): Fixture {
+async function fixture(patchFiles: readonly string[] = []): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), 'dsh-upgrade-patch-'))
   const origin = join(root, 'origin')
   mkdirSync(origin, { recursive: true })
@@ -136,6 +150,8 @@ function fixture(patchFiles: readonly string[] = []): Fixture {
     root,
     upstream: origin,
     tagPattern: 'dsh-v*',
+    webPort: await freePort(),
+    smokePort: await freePort(),
     patchFiles,
     keepMe: { untouched: true },
   }, null, 2)}\n`, 'utf8')
@@ -147,8 +163,8 @@ function readConfig(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
 }
 
-test('patch list shows catalogued and configured patches as JSON', () => {
-  const { root, manifest } = fixture()
+test('patch list shows catalogued and configured patches as JSON', async () => {
+  const { root, manifest } = await fixture()
   const listed = run(['patch', 'list', '--json', '--manifest', manifest], root)
   assert.equal(listed.status, 0, listed.stderr)
   const report = JSON.parse(listed.stdout) as {
@@ -166,8 +182,8 @@ test('patch list shows catalogued and configured patches as JSON', () => {
   assert.equal(report.patches[1]?.obsoleteSince, 'dsh-v9.0.0')
 })
 
-test('patch add and remove touch only patchFiles and are idempotent', () => {
-  const { root, manifest, good } = fixture()
+test('patch add and remove touch only patchFiles and are idempotent', async () => {
+  const { root, manifest, good } = await fixture()
   const added = run(['patch', 'add', 'good', '--json', '--manifest', manifest], root)
   assert.equal(added.status, 0, added.stderr)
   const first = JSON.parse(added.stdout) as { file: string, patchFiles: string[] }
@@ -189,8 +205,8 @@ test('patch add and remove touch only patchFiles and are idempotent', () => {
   assert.equal((JSON.parse(twice.stdout) as { wasActive: boolean }).wasActive, false)
 })
 
-test('patch add accepts a patch path outside the catalog and rejects a non-patch', () => {
-  const { root, good } = fixture()
+test('patch add accepts a patch path outside the catalog and rejects a non-patch', async () => {
+  const { root, good } = await fixture()
   const added = run(['patch', 'add', '--file', good, '--json'], root)
   assert.equal(added.status, 0, added.stderr)
   assert.deepEqual(readConfig(join(root, 'dsh-upgrade.json'))['patchFiles'], [good])
@@ -206,8 +222,8 @@ test('patch add accepts a patch path outside the catalog and rejects a non-patch
   assert.match(absent.stderr, /no patch file at/)
 })
 
-test('patch verify reports applies, applied, and conflict against the serving tree', () => {
-  const { root, manifest, good } = fixture()
+test('patch verify reports applies, applied, and conflict against the serving tree', async () => {
+  const { root, manifest, good } = await fixture()
   const applicable = run(['patch', 'verify', '--json', '--manifest', manifest], root)
   assert.equal(applicable.status, 0, applicable.stderr)
   assert.deepEqual((JSON.parse(applicable.stdout) as { checks: { state: string }[] }).checks, [])
@@ -235,8 +251,8 @@ test('patch verify reports applies, applied, and conflict against the serving tr
   assert.deepEqual(conflictReport.checks.map(check => check.state), ['applied', 'conflict'])
 })
 
-test('patch verify --all reports catalog entries that are not applied without failing them', () => {
-  const { root, manifest } = fixture()
+test('patch verify --all reports catalog entries that are not applied without failing them', async () => {
+  const { root, manifest } = await fixture()
   const verified = run(['patch', 'verify', '--all', '--json', '--manifest', manifest], root)
   assert.equal(verified.status, 0, verified.stderr)
   const report = JSON.parse(verified.stdout) as { ok: boolean, checks: { name: string, active: boolean, state: string }[] }
@@ -245,8 +261,8 @@ test('patch verify --all reports catalog entries that are not applied without fa
   assert.deepEqual(report.checks.map(check => check.state), ['applies', 'conflict'])
 })
 
-test('patch verify without a checkout asks for a stage instead of guessing', () => {
-  const { root, manifest } = fixture()
+test('patch verify without a checkout asks for a stage instead of guessing', async () => {
+  const { root, manifest } = await fixture()
   rmSync(join(root, 'dsh-slots'), { recursive: true, force: true })
   const verified = run(['patch', 'verify', '--json', '--manifest', manifest], root)
   assert.equal(verified.status, 4)
@@ -255,8 +271,8 @@ test('patch verify without a checkout asks for a stage instead of guessing', () 
   assert.match(report.error, /no slot checkout under/)
 })
 
-test('a configured patch that conflicts stops stage and records the reason', () => {
-  const { root, conflict } = fixture()
+test('a configured patch that conflicts stops stage and records the reason', async () => {
+  const { root, conflict } = await fixture()
   const added = run(['patch', 'add', '--file', conflict, '--json'], root)
   assert.equal(added.status, 0, added.stderr)
   const fakePnpm = join(root, 'fake-pnpm.mjs')
@@ -274,8 +290,8 @@ test('a configured patch that conflicts stops stage and records the reason', () 
   assert.equal(existsSync(join(root, 'dsh-slots', 'a', '.dsh-build')), false)
 })
 
-test('stage re-prepares a slot when a patch was added after it was prepared', () => {
-  const { root, slot, good } = fixture()
+test('stage re-prepares a slot when a patch was added after it was prepared', async () => {
+  const { root, slot, good } = await fixture()
   const fakePnpm = fakePnpmIn(root)
 
   const first = run(['stage', '--json'], root, { DSH_UPGRADE_PNPM_JS: fakePnpm })
@@ -295,8 +311,8 @@ test('stage re-prepares a slot when a patch was added after it was prepared', ()
   assert.equal(state.staged.tag, 'dsh-v0.2.1-rc.3')
 })
 
-test('several patches that touch one file all apply in one stage', () => {
-  const { root, slot } = fixture()
+test('several patches that touch one file all apply in one stage', async () => {
+  const { root, slot } = await fixture()
   const fakePnpm = fakePnpmIn(root)
   const second = join(root, 'second.patch')
   writeFileSync(second, [
@@ -320,8 +336,8 @@ test('several patches that touch one file all apply in one stage', () => {
   assert.equal(readFileSync(join(slot, 'file.txt'), 'utf8').trim(), 'three')
 })
 
-test('patch remove matches a path spelled differently', () => {
-  const { root, good } = fixture()
+test('patch remove matches a path spelled differently', async () => {
+  const { root, good } = await fixture()
   const added = run(['patch', 'add', '--file', good, '--json'], root)
   assert.equal(added.status, 0, added.stderr)
 
@@ -338,8 +354,8 @@ test('patch remove matches a path spelled differently', () => {
   assert.equal(realpathSync.native(stored).toLowerCase(), realpathSync.native(good).toLowerCase())
 })
 
-test('a malformed patchFiles value is reported with the documented code', () => {
-  const { root } = fixture()
+test('a malformed patchFiles value is reported with the documented code', async () => {
+  const { root } = await fixture()
   const configPath = join(root, 'dsh-upgrade.json')
   const config = readConfig(configPath)
   config['patchFiles'] = 'x.patch'
@@ -353,8 +369,8 @@ test('a malformed patchFiles value is reported with the documented code', () => 
   assert.ok(!listed.stderr.includes('    at '), 'no stack trace for a malformed configuration')
 })
 
-test('a malformed catalog is reported rather than ignored', () => {
-  const { root } = fixture()
+test('a malformed catalog is reported rather than ignored', async () => {
+  const { root } = await fixture()
   const broken = join(root, 'broken-manifest.json')
   writeFileSync(broken, `${JSON.stringify({
     schema: 1,
@@ -375,8 +391,8 @@ test('a malformed catalog is reported rather than ignored', () => {
   assert.match(rejected.stderr, /unsupported "schema"/)
 })
 
-test('an unknown verb or a missing configuration is reported with the documented code', () => {
-  const { root } = fixture()
+test('an unknown verb or a missing configuration is reported with the documented code', async () => {
+  const { root } = await fixture()
   const unknown = run(['patch', 'frobnicate'], root)
   assert.equal(unknown.status, 2)
   assert.match(unknown.stderr, /unknown patch command "frobnicate"/)

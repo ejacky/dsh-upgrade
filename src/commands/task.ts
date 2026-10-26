@@ -87,6 +87,9 @@ function parseFlags(args: readonly string[]): TaskFlags {
   if (chosen !== 'install' && (s4u || interval !== DEFAULT_INTERVAL_MINUTES)) {
     throw new Error('--interval and --s4u only apply to "task install"')
   }
+  // Only `install` has a dry run; accepting the flag elsewhere would look like a rehearsal of a
+  // destructive command.
+  if (chosen !== 'install' && dryRun) throw new Error('--dry-run only applies to "task install"')
   return { verb: chosen, interval, s4u, dryRun, name }
 }
 
@@ -334,12 +337,14 @@ export function runTask(args: readonly string[], options: RunOptions): number {
         '\'{"removed":true}\'',
       ].join('\n')
       const deleted = powershell(script, 60_000)
-      rmSync(paths.wrapper, { force: true })
       const report = parseTrailingJson(deleted.stdout)
       if (deleted.code !== 0 || report === undefined) {
+        // Keep the wrapper: the task may still be registered and pointing at it, and a registered
+        // task with a deleted wrapper fails silently every time it fires.
         return reportFailure(`could not remove task "${flags.name}": ${deleted.stderr.trim() || 'no answer'}`, EXIT.probe, options.json)
       }
       const removed = report['removed'] === true
+      rmSync(paths.wrapper, { force: true })
       if (options.json) process.stdout.write(`${JSON.stringify({ ok: true, name: flags.name, removed, wrapper: paths.wrapper })}\n`)
       else if (removed) process.stdout.write(`removed task ${flags.name} and its wrapper\n`)
       else process.stdout.write(`task ${flags.name} is not registered; wrapper removed\n`)
@@ -380,16 +385,24 @@ export function runTask(args: readonly string[], options: RunOptions): number {
     }
     // Prove the task is there, rather than trusting a silent registration.
     const queried = parseTrailingJson(powershell(statusScript(flags.name), 60_000).stdout)
-    const interval = queried?.['intervalMinutes']
+    if (queried?.['installed'] !== true) {
+      return reportFailure(
+        `the task "${flags.name}" is not registered after install; the registration was accepted but had no effect. `
+        + 'Run "dsh-upgrade task install" from an administrator console.',
+        EXIT.manual,
+        options.json,
+      )
+    }
+    const interval = queried['intervalMinutes']
     if (options.json) {
-      process.stdout.write(`${JSON.stringify({ ok: true, name: flags.name, interval: flags.interval, installed: queried?.['installed'] === true, wrapper: paths.wrapper, log: paths.log })}\n`)
+      process.stdout.write(`${JSON.stringify({ ok: true, name: flags.name, interval: flags.interval, installed: true, wrapper: paths.wrapper, log: paths.log })}\n`)
       return EXIT.ok
     }
     process.stdout.write([
       `registered task ${flags.name} every ${flags.interval} minutes (${flags.s4u ? 'whether or not you are logged on' : 'while you are logged on'})`,
       `  wrapper  ${paths.wrapper}`,
       `  log      ${paths.log}`,
-      `  state    ${String(queried?.['state'] ?? 'unknown')}${interval === null || interval === undefined ? '' : `, every ${String(interval)} min`}`,
+      `  state    ${String(queried['state'] ?? 'unknown')}${interval === null || interval === undefined ? '' : `, every ${String(interval)} min`}`,
       '  the task prepares a new version; it never switches to it',
     ].join('\n') + '\n')
     return EXIT.ok

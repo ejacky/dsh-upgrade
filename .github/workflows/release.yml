@@ -3,7 +3,6 @@ name: release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,6 +15,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: the tag must match version.json
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            Write-Error "tag ${{ github.ref_name }} does not match version.json (v$version)"
+            exit 1
+          }
       - name: install dev dependencies
         run: npm install --no-audit --no-fund
       - name: typecheck
@@ -32,6 +39,7 @@ jobs:
           Get-Content dist\SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: |
             dist/*.zip
             dist/SHA256SUMS.txt

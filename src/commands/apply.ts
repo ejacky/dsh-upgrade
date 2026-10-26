@@ -14,10 +14,12 @@ import { join } from 'node:path'
 import { loadConfig, resolveConfigPath } from '../engine/config.ts'
 import { describeLink, setLink } from '../engine/link.ts'
 import { acquireLock } from '../engine/lock.ts'
-import { startService, stopService, waitForService } from '../engine/service.ts'
+import { portOwner, startService, stopService, waitForService } from '../engine/service.ts'
 import { activeSlot, slotExists, slotPath, spareSlot, type SlotName } from '../engine/slots.ts'
 import { readState, statePathOf, writeState, withDeployed, type SlotRecord } from '../engine/state.ts'
-import { tagAtHead } from '../engine/git.ts'
+import { cliEntryPath } from '../engine/entry.ts'
+import { tagsAtHead } from '../engine/git.ts'
+import { newestTag } from '../engine/semver.ts'
 import type { RunOptions } from '../cli.ts'
 
 /** `apply` flags. */
@@ -74,7 +76,7 @@ interface SwitchOutcome {
  * @param config - resolved tool configuration.
  * @param target - slot to serve.
  * @param tag - tag expected in that slot.
- * @param noStart - flip without starting a server (tests, or a stopped machine).
+ * @param noStart - flip the junction without touching the server (tests, or a stopped machine).
  */
 async function switchTo(
   config: Parameters<typeof waitForService>[0],
@@ -83,15 +85,24 @@ async function switchTo(
   noStart: boolean,
 ): Promise<SwitchOutcome> {
   const previous = activeSlot(config)
-  const previousTag = previous === undefined ? undefined : tagAtHead(slotPath(config, previous))
+  const previousTag = previous === undefined ? undefined : newestTag(tagsAtHead(slotPath(config, previous)), config.tagPattern)?.tag
   const directory = slotPath(config, target)
+  // The slot may have been re-checked-out since it was staged; switching to it would record a
+  // version that is not there.
+  if (!tagsAtHead(directory).includes(tag)) {
+    return { ok: false, slot: target, tag, error: `slot ${target} is no longer at ${tag}; run "dsh-upgrade stage" again` }
+  }
   try {
     setLink(config.stablePath, directory)
   } catch (error) {
     return { ok: false, slot: target, tag, error: (error as Error).message }
   }
-  stopService(config.webPort)
+  // `--no-start` flips the junction and leaves the running server alone: stopping it would leave
+  // the machine with nothing serving while reporting success.
   if (noStart) return { ok: true, slot: target, tag }
+
+  stopService(config.webPort)
+  await waitPortFree(config.webPort)
 
   let started
   try {
@@ -103,23 +114,24 @@ async function switchTo(
       setLink(config.stablePath, slotPath(config, previous))
       try {
         const restarted = startService(config, slotPath(config, previous))
-        await waitForService(config, restarted.logPath)
+        await waitForService(config, restarted.logPath, restarted.pid)
       } catch {
         // Reported below; the operator can start the old version by hand.
       }
     }
     return { ok: false, slot: target, tag, error: (error as Error).message }
   }
-  const ready = await waitForService(config, started.logPath)
+  const ready = await waitForService(config, started.logPath, started.pid)
   if (ready) return { ok: true, slot: target, tag }
 
   // Roll back: the previous slot becomes the stable path again and is restarted.
   stopService(config.webPort)
+  await waitPortFree(config.webPort)
   if (previous !== undefined) {
     setLink(config.stablePath, slotPath(config, previous))
     try {
       const restarted = startService(config, slotPath(config, previous))
-      await waitForService(config, restarted.logPath)
+      await waitForService(config, restarted.logPath, restarted.pid)
     } catch {
       // Leaving the old slot in place is still better than serving nothing new; the caller
       // reports the failure and the operator can start it by hand.
@@ -134,20 +146,47 @@ async function switchTo(
 }
 
 /**
- * Worker body: switch and record the result. Runs in the detached process.
+ * Wait until a port is free.
+ * @param port - the port.
+ * @param timeoutMs - upper bound.
+ * @returns whether the port became free.
+ */
+async function waitPortFree(port: number, timeoutMs = 30_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (portOwner(port) === undefined) return true
+    await new Promise(resolve => { setTimeout(resolve, 300) })
+  }
+  return portOwner(port) === undefined
+}
+
+/**
+ * Worker body: switch and record the result. Runs in the detached process, or in the
+ * foreground with `--wait`.
  * @param config - resolved tool configuration.
  * @param target - slot to serve.
  * @param tag - tag to record.
  * @param noStart - skip starting a server.
+ * @param json - emit the machine-readable result instead of a sentence.
  * @returns the process exit code.
  */
-async function executeSwitch(config: Parameters<typeof waitForService>[0], target: SlotName, tag: string, noStart: boolean): Promise<number> {
+async function executeSwitch(
+  config: Parameters<typeof waitForService>[0],
+  target: SlotName,
+  tag: string,
+  noStart: boolean,
+  json: boolean,
+): Promise<number> {
   const statePath = statePathOf(config)
   const outcome = await switchTo(config, target, tag, noStart)
   const state = readState(statePath)
   if (!outcome.ok) {
     writeState(statePath, { ...state, lastError: outcome.error ?? 'switch failed' })
-    process.stderr.write(`dsh-upgrade apply: ${outcome.error ?? 'switch failed'}\n`)
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ ok: false, error: outcome.error ?? 'switch failed', nextAction: 'retry' })}\n`)
+    } else {
+      process.stderr.write(`dsh-upgrade apply: ${outcome.error ?? 'switch failed'}\n`)
+    }
     return 4
   }
   // Keep the client metadata `stage` recorded: `status` reports the serving build's frontend.
@@ -166,7 +205,8 @@ async function executeSwitch(config: Parameters<typeof waitForService>[0], targe
   }
   const record: SlotRecord = { tag, slot: target, at: new Date().toISOString(), ...client }
   writeState(statePath, withDeployed(state, record))
-  process.stdout.write(`serving ${tag} from slot ${target}\n`)
+  if (json) process.stdout.write(`${JSON.stringify({ ok: true, tag, slot: target, started: !noStart })}\n`)
+  else process.stdout.write(`serving ${tag} from slot ${target}\n`)
   return 0
 }
 
@@ -186,8 +226,7 @@ export async function runApply(args: readonly string[], options: RunOptions): Pr
   }
   const configPath = resolveConfigPath(options.configPath, options.cwd, options.toolRoot)
   if (!existsSync(configPath)) {
-    process.stderr.write(`dsh-upgrade apply: ${configPath} not found (run "dsh-upgrade init")\n`)
-    return 4
+    return applyFailure(`dsh-upgrade apply: ${configPath} not found (run "dsh-upgrade init")`, 4, options)
   }
   const config = loadConfig(configPath)
 
@@ -200,7 +239,8 @@ export async function runApply(args: readonly string[], options: RunOptions): Pr
       return 3
     }
     try {
-      return await executeSwitch(config, flags.slot, flags.tag, flags.noStart)
+      // The worker writes to a log file, where a sentence reads better than JSON.
+      return await executeSwitch(config, flags.slot, flags.tag, flags.noStart, false)
     } finally {
       workerLock.release()
     }
@@ -209,22 +249,22 @@ export async function runApply(args: readonly string[], options: RunOptions): Pr
   const state = readState(statePathOf(config))
   const staged = state.staged
   if (staged === null) {
-    process.stderr.write('dsh-upgrade apply: nothing staged (run "dsh-upgrade stage")\n')
-    return 3
+    return applyFailure('dsh-upgrade apply: nothing staged (run "dsh-upgrade stage")', 3, options)
   }
   const link = describeLink(config.stablePath)
   if (link.kind === 'directory') {
-    process.stderr.write(`dsh-upgrade apply: ${config.stablePath} is a real directory; refusing to replace it\n`)
-    return 3
+    return applyFailure(`dsh-upgrade apply: ${config.stablePath} is a real directory; refusing to replace it`, 3, options)
   }
-  if (!slotExists(config, staged.slot)) return 4
+  if (!slotExists(config, staged.slot)) {
+    return applyFailure(`dsh-upgrade apply: slot ${staged.slot} has no checkout`, 4, options)
+  }
 
   if (!flags.wait) {
     // Detached: the switch stops the server, so it must outlive this invocation.
     const fd = openSync(join(config.root, 'logs', `apply-${staged.tag}.log`), 'a')
     try {
       const child = spawn(process.execPath, [
-        import.meta.filename, 'apply', '--execute', '--slot', staged.slot, '--tag', staged.tag,
+        cliEntryPath(), 'apply', '--execute', '--slot', staged.slot, '--tag', staged.tag,
         ...flags.noStart ? ['--no-start'] : [],
         ...options.configPath === undefined ? [] : ['--config', options.configPath],
       ], { cwd: options.cwd, stdio: ['ignore', fd, fd], detached: true, windowsHide: true })
@@ -232,20 +272,36 @@ export async function runApply(args: readonly string[], options: RunOptions): Pr
     } finally {
       closeSync(fd)
     }
-    process.stdout.write(`switching to ${staged.tag} in the background; watch ${join(config.root, 'logs')}\n`)
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify({ ok: true, detached: true, tag: staged.tag, slot: staged.slot, nextAction: 'status' })}\n`)
+    } else {
+      process.stdout.write(`switching to ${staged.tag} in the background; watch ${join(config.root, 'logs')}\n`)
+    }
     return 0
   }
 
   const lock = acquireLock(join(config.root, 'state', 'layout.lock'))
-  if (lock === undefined) {
-    process.stderr.write('dsh-upgrade apply: another switch is running\n')
-    return 3
-  }
+  if (lock === undefined) return applyFailure('dsh-upgrade apply: another switch is running', 3, options)
   try {
-    return await executeSwitch(config, staged.slot, staged.tag, flags.noStart)
+    return await executeSwitch(config, staged.slot, staged.tag, flags.noStart, options.json)
   } finally {
     lock.release()
   }
+}
+
+/**
+ * Report a failure before the switch starts.
+ * @param message - the sentence for a human.
+ * @param code - exit code.
+ * @param options - global options.
+ */
+function applyFailure(message: string, code: number, options: RunOptions): number {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ ok: false, error: message.replace(/^dsh-upgrade apply: /, ''), nextAction: 'retry' })}\n`)
+  } else {
+    process.stderr.write(`${message}\n`)
+  }
+  return code
 }
 
 /**
@@ -262,23 +318,37 @@ export async function runRollback(args: readonly string[], options: RunOptions):
     return 2
   }
   const configPath = resolveConfigPath(options.configPath, options.cwd, options.toolRoot)
-  if (!existsSync(configPath)) {
-    process.stderr.write(`dsh-upgrade rollback: ${configPath} not found (run "dsh-upgrade init")
-`)
-    return 4
-  }
+  if (!existsSync(configPath)) return rollbackFailure(`${configPath} not found (run "dsh-upgrade init")`, 4, options)
   const config = loadConfig(configPath)
   const target = spareSlot(config)
-  if (!slotExists(config, target)) {
-    process.stderr.write(`dsh-upgrade rollback: slot ${target} has no checkout\n`)
-    return 4
+  if (!slotExists(config, target)) return rollbackFailure(`slot ${target} has no checkout`, 4, options)
+  // Several tags can point at one commit; the newest matching one is the version that slot holds.
+  const tag = newestTag(tagsAtHead(slotPath(config, target)), config.tagPattern)?.tag
+  if (tag === undefined) return rollbackFailure(`slot ${target} is not at a tag matching ${config.tagPattern}`, 4, options)
+
+  // A rollback writes the same files as a switch, so it takes the same lock.
+  const lock = acquireLock(join(config.root, 'state', 'layout.lock'))
+  if (lock === undefined) return rollbackFailure('another layout action is running', 3, options)
+  try {
+    return await executeSwitch(config, target, tag, noStart, options.json)
+  } finally {
+    lock.release()
   }
-  const tag = tagAtHead(slotPath(config, target))
-  if (tag === undefined) {
-    process.stderr.write(`dsh-upgrade rollback: slot ${target} is not at a tag\n`)
-    return 4
+}
+
+/**
+ * Report a failure before the rollback starts.
+ * @param message - what went wrong.
+ * @param code - exit code.
+ * @param options - global options.
+ */
+function rollbackFailure(message: string, code: number, options: RunOptions): number {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ ok: false, error: `rollback: ${message}`, nextAction: 'retry' })}\n`)
+  } else {
+    process.stderr.write(`dsh-upgrade rollback: ${message}\n`)
   }
-  return executeSwitch(config, target, tag, noStart)
+  return code
 }
 
 

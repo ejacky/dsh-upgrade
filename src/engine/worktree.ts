@@ -8,7 +8,8 @@
  * @module dsh-upgrade/engine/worktree
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { join } from 'node:path'
 import type { Config } from './config.ts'
 import { git } from './git.ts'
@@ -32,23 +33,47 @@ function stamp(): string {
 
 /**
  * Export uncommitted changes in a slot before they can be overwritten.
+ *
+ * Tracked changes go into a binary-safe patch. Untracked files are copied, not just listed: a
+ * `git diff` does not contain them, and `checkout --force` leaves them in place while the next
+ * `install` may delete the tree they live in — the copy is the only record of their contents.
+ *
  * @param config - resolved tool configuration.
  * @param slot - slot name.
  * @param path - the slot's directory.
  * @param logger - progress sink.
  * @returns the rescue patch path, or `undefined` when the tree was clean.
+ * @throws when the slot's status cannot be read: an unknown state must not be force-checked-out.
  */
 function rescueUncommitted(config: Config, slot: SlotName, path: string, logger: Logger): string | undefined {
   const status = git(['status', '--porcelain'], path)
-  if (!status.ok || status.stdout.trim() === '') return undefined
+  if (!status.ok) throw new Error(`git status failed in slot ${slot}: ${status.stderr.trim() || 'no output'}`)
+  if (status.stdout.trim() === '') return undefined
   const directory = join(config.root, 'rescued')
   mkdirSync(directory, { recursive: true })
   const patch = join(directory, `${slot}-${stamp()}.patch`)
   // Binary-safe: take the diff as a buffer so a stray byte cannot corrupt the patch.
   const diff = execFileSync('git', ['diff', 'HEAD', '--binary'], { cwd: path, encoding: 'buffer', stdio: ['ignore', 'pipe', 'pipe'] })
   writeFileSync(patch, diff)
-  const untracked = status.stdout.split(/\r?\n/).filter(line => line.startsWith('??'))
-  if (untracked.length > 0) writeFileSync(patch.replace(/\.patch$/, '-untracked.txt'), `${untracked.join('\n')}\n`, 'utf8')
+  const untracked = status.stdout
+    .split(/\r?\n/)
+    .filter(line => line.startsWith('?? '))
+    .map(line => line.slice(3).replace(/^"|"$/g, ''))
+  if (untracked.length > 0) {
+    const copy = patch.replace(/\.patch$/, '-untracked')
+    for (const entry of untracked) {
+      const source = join(path, entry)
+      const target = join(copy, entry)
+      try {
+        if (!existsSync(source)) continue
+        mkdirSync(dirname(target), { recursive: true })
+        cpSync(source, target, { recursive: true, force: true })
+      } catch {
+        // A locked file is reported below; the name is still recorded by the copy's presence.
+      }
+    }
+    writeFileSync(patch.replace(/\.patch$/, '-untracked.txt'), `${untracked.join('\n')}\n`, 'utf8')
+  }
   logger(`rescued ${untracked.length} untracked entries and local changes to ${patch}`)
   return patch
 }

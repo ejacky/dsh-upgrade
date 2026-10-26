@@ -52,11 +52,18 @@ Defaults are `x-opencode-session` on URLs containing `opencode.ai`. To use somet
   "opencodeSession": {
     "enabled": true,
     "source": "builtin",
+    "npmVersion": "^0.1.0",
     "header": "x-my-session",
     "urlMarkers": ["gateway.example"]
   }
 }
 ```
+
+`source` selects where the package comes from: `builtin` (the vendored copy, works offline),
+`npm` (the published `dsh-x-opencode-session` at `npmVersion`, default `^0.1.0`), `off` (install
+refuses). `enabled: false` means the tool leaves the profile alone; `doctor` then reports the
+header as intentionally absent. If `npm pack` cannot run at all, `install` links the vendored
+directory instead and says so — that works, but moving the tool later breaks the profile.
 
 `install` turns that into an override block in the profile patch:
 
@@ -70,10 +77,11 @@ Defaults are `x-opencode-session` on URLs containing `opencode.ai`. To use somet
 ```
 
 The row's config is validated by the plugin: a bad header or an empty marker list throws at load
-instead of silently dropping the header.
+instead of silently dropping the header. Re-running `install` with default settings removes an
+override it wrote earlier, so the profile never carries two contradicting settings.
 
 `source` selects where the package comes from: `builtin` (the vendored copy, works offline),
-`npm` (`dsh-x-opencode-session@<version>` from the registry), `off` (install refuses).
+`npm` (`dsh-x-opencode-session` at `npmVersion`), `off` (install refuses).
 `enabled: false` means the tool leaves the profile alone; `doctor` then reports the header as
 intentionally absent.
 
@@ -87,7 +95,9 @@ node src\cli.ts doctor            # the "opencode-session" probe
 `status` reports the installed version, whether the profile lists it as a layer, whether the
 settings override is present, and whether a legacy provider `sessionHeader` still exists. The
 `doctor` probe answers the same question for an operator who does not want to read JSON: plugin,
-legacy setting, or nothing — and what to do.
+legacy setting, or nothing — and what to do. It treats a package that is installed but missing
+from `dsh.profile.bundles` as a failure, because that row is never loaded: the header would be
+silently absent.
 
 ## Removing it
 

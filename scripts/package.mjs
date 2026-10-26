@@ -16,7 +16,7 @@ import { dirname, join, relative } from 'node:path'
 const toolRoot = join(import.meta.dirname, '..')
 
 /** Directories shipped whole, in the order they appear in the archive. */
-const DIRECTORIES = ['src', 'engine-ps', 'patches', 'plugins', 'templates', 'docs']
+const DIRECTORIES = ['src', 'engine-ps', 'patches', 'plugins', 'docs']
 
 /** Files shipped at the archive root. */
 const FILES = ['setup.cmd', 'README.md', 'LICENSE', 'package.json', 'version.json']
@@ -73,7 +73,7 @@ if (outDirectory === undefined) fail('--out needs a directory')
 const { name, version } = versionOf(toolRoot)
 const files = filesOf(toolRoot)
 if (files.length === 0) fail('no files to package')
-for (const required of ['src/cli.ts', 'setup.cmd', 'plugins/opencode-session/lib/index.js', 'patches/manifest.json']) {
+for (const required of ['src/cli.ts', 'engine-ps/tray.ps1', 'setup.cmd', 'plugins/opencode-session/lib/index.js', 'patches/manifest.json']) {
   if (!files.includes(required)) fail(`the zip would be unusable: ${required} is missing`)
 }
 
@@ -104,11 +104,14 @@ writeFileSync(join(staging, '.dsh-upgrade-release'), `${version}\n`, 'utf8')
 mkdirSync(outDirectory, { recursive: true })
 rmSync(summary.zip, { force: true })
 
+// Single quotes are the one character PowerShell cannot take literally inside a single-quoted
+// string; double them so a path like `C:\O'Brien` still packs.
+const psQuote = value => `'${value.replaceAll("'", "''")}'`
 const packed = spawnSync('pwsh', [
   '-NoProfile',
   '-NonInteractive',
   '-Command',
-  `Compress-Archive -Path '${join(staging, '*')}' -DestinationPath '${summary.zip}' -CompressionLevel Optimal`,
+  `Compress-Archive -Path ${psQuote(join(staging, '*'))} -DestinationPath ${psQuote(summary.zip)} -CompressionLevel Optimal`,
 ], { encoding: 'utf8' })
 if (packed.status !== 0) {
   rmSync(staging, { recursive: true, force: true })

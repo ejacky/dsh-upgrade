@@ -1,7 +1,8 @@
 # Commands
 
 Every command accepts `--json` and `--config <path>`. Without `--config`, the configuration is
-looked up in the current directory, then in the tool's own directory, then `$DSH_UPGRADE_CONFIG`.
+looked up through `$DSH_UPGRADE_CONFIG`, then the current directory, then the tool's own
+directory.
 
 ## Exit codes
 
@@ -37,32 +38,45 @@ Creates the directories, the configuration, and an empty state file. `--force` r
 existing configuration.
 
 ### `status`
-`--json`: `{deployed, staged, activeSlot, slots, lastCheck, lastError, served}`.
+Prints versions, slots, staged version, and the last error. `--json`: `{ok, configPath,
+stablePath, activeSlot, deployed, staged, lastCheck, lastError, slots}`.
 
 ### `check [--no-fetch]`
 Fetches tags and compares strictly by semver. `--json`: `{ok, current, latest, newer, candidate,
-tags}`. A candidate is only ever a strictly newer version; a re-tagged or older release is never
-proposed. Exit `4` when the fetch or the checkout cannot be read.
+tags}`; when the check cannot run it emits `{ok: false, error, nextAction}` and exits `4`. A
+candidate is only ever a strictly newer version; a re-tagged or older release is never proposed.
 
 ### `stage [--tag <tag>] [--skip-build] [--skip-install] [--force] [--no-fetch] [--resume]`
 Prepares the **spare** slot: checkout the tag, rescue uncommitted work, apply patches, install,
 build, smoke-test on `smokePort` with an isolated `DSH_HOME`, then record it as staged.
 
-- A prepared slot is reused only when no patch is configured (a new patch must be applied).
-- `manualBuild` stops after install, writes `state\build-request.json`, and exits `3`.
-- `--resume` finishes that build: it verifies the slot is still at the requested tag, requires
-  the `.dsh-build` record, runs the smoke test, records the slot, and deletes the request.
-- `--json`: `{ok, tag, slot, smoke, clientVersion, clientArtifacts, patches:{applied, alreadyApplied},
-  alreadyPrepared?, nextAction}`.
+- A prepared slot is reused only when nothing would change: no patch is configured **and** the
+  state still records that version in that slot as staged.
+- `--tag` must match `tagPattern` and be strictly newer than the deployed version; a
+  non-newer tag exits `3` unless `--force` is given. `--force` also skips the reuse shortcut.
+- `manualBuild` stops after install, drops the slot's stale build record, writes
+  `state\build-request.json`, and exits `3`.
+- `--resume` finishes that build: it verifies the slot is still at the requested tag, requires a
+  build record newer than the request, runs the smoke test, records the slot, and deletes the
+  request.
+- `--json` on success: `{ok, tag, slot, smoke, clientVersion, clientArtifacts,
+  patches:{applied, alreadyApplied}, nextAction}`. The reuse shortcut emits
+  `{ok, tag, slot, alreadyPrepared: true}`; `--resume` emits
+  `{ok, resumed: true, tag, slot, smoke, nextAction}`.
 
 ### `apply [--wait] [--no-start]`
-Switches the junction to the staged slot, stops the server, starts the new one, and waits for it
-to answer. A failed start restores **and restarts** the previous slot, so the service keeps
-serving. `apply` always runs as a detached helper; `--wait` keeps it in the foreground for tests.
-`--json`: `{ok, to, from, started, error?}`.
+Flips the junction to the staged slot, stops the old server, starts the new one, and waits for
+it to answer. A failed start restores **and restarts** the previous slot, so the service keeps
+serving. The slot must still be checked out at the staged tag; otherwise `apply` exits `4` and
+records nothing. `--no-start` flips the junction and leaves the running server alone.
+
+By default `apply` detaches the switch and returns immediately — exit `0` means *scheduled*.
+`--json` (detached): `{ok, detached: true, tag, slot, nextAction: "status"}`. With `--wait`
+`--json` reports the outcome: `{ok, tag, slot, started}` or `{ok: false, error, nextAction}`.
 
 ### `rollback [--no-start]`
-Switches back to the previously deployed slot under the same rules as `apply`.
+Switches back to the previously deployed slot under the same junction rules, in the foreground
+under the layout lock. `--json` is the same object `apply --wait` emits.
 
 ### `toggle [--yes]` / `start` / `stop`
 One-icon control. `toggle` starts when the port is free and stops when it is held; stopping asks

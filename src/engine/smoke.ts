@@ -103,9 +103,10 @@ export async function smoke(config: Config, slotDirectory: string, logPath: stri
       const bare = `http://127.0.0.1:${config.smokePort}/`
       if (!urls.includes(bare)) urls.push(bare)
       const status = await probe(bare)
-      // A 401 only proves *something* listens on that port; accept it solely when the listener is
-      // this smoke's own child, so an unrelated server cannot make a broken build look healthy.
-      if (status === 200 || (status === 401 && portOwner(config.smokePort) === child.pid)) {
+      // A bare URL answer only proves *something* listens on that port. Accept it solely when the
+      // listener is this smoke's own child, so an unrelated server cannot make a broken build
+      // look healthy.
+      if ((status === 200 || status === 401) && portOwner(config.smokePort) === child.pid) {
         return { ok: true, urls }
       }
       if (exited !== undefined) {

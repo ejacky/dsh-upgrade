@@ -87,10 +87,16 @@ test('doctor names which mechanism provides the gateway session header', () => {
   assert.equal(legacy.ok, true)
   assert.match(legacy.detail, /does not survive an upstream change/)
 
-  // The plugin, with the legacy line gone.
+  // The plugin, with the legacy line gone and the layer recorded.
   writeFileSync(join(profile, 'cordis.patch.yml'), '- id: llm-pi-ai\n  config: {}\n', 'utf8')
-  writeFileSync(join(profile, 'package.json'), '{"name":"dsh-profile-web","private":true,"dependencies":{"dsh-x-opencode-session":"0.1.1"}}\n', 'utf8')
+  writeFileSync(join(profile, 'package.json'), '{"name":"dsh-profile-web","private":true,"dependencies":{"dsh-x-opencode-session":"0.1.1"},"dsh":{"profile":{"bundles":["dsh-x-opencode-session"]}}}\n', 'utf8')
   const plugin = probeOf()
   assert.equal(plugin.ok, true)
   assert.match(plugin.detail, /^0\.1\.1 in profile web/)
+
+  // Installed as a plain dependency: the row never loads, so doctor must not call it healthy.
+  writeFileSync(join(profile, 'package.json'), '{"name":"dsh-profile-web","private":true,"dependencies":{"dsh-x-opencode-session":"0.1.1"},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base"]}}}\n', 'utf8')
+  const unlayered = probeOf()
+  assert.equal(unlayered.ok, false)
+  assert.match(unlayered.detail, /is not a profile layer/)
 })

@@ -78,7 +78,7 @@ export async function runStart(args: readonly string[], options: RunOptions): Pr
   }
   try {
     const started = startService(config, slotPath(config, active))
-    const ready = await waitForService(config, started.logPath)
+    const ready = await waitForService(config, started.logPath, started.pid)
     if (context.json) process.stdout.write(`${JSON.stringify({ ok: ready, running: ready, pid: started.pid ?? null })}\n`)
     if (!ready) {
       process.stderr.write(`dsh-upgrade start: no answer on ${config.webPort} (see ${started.logPath})\n`)
@@ -190,8 +190,9 @@ export interface LauncherFiles {
  * Render one launcher's wrappers.
  *
  * The `.vbs` is UTF-16LE with a BOM because `wscript` reads that as Unicode, so a path with
- * non-ASCII characters (Chinese user names, OneDrive folders) survives; the `.cmd` stays
- * ASCII, because `cmd.exe` reads it in the console code page.
+ * non-ASCII characters (Chinese user names, OneDrive folders) survives. The `.cmd` is a
+ * trampoline: it must stay ASCII for `cmd.exe`, so it embeds no path and asks `wscript` to run
+ * the sibling `.vbs` through `%~dp0`.
  * @param launcher - which launcher.
  * @param bin - directory the wrapper runs from.
  * @param cli - absolute path of the CLI entry.
@@ -199,7 +200,7 @@ export interface LauncherFiles {
  */
 export function launcherFiles(launcher: Launcher, bin: string, cli: string, node: string): LauncherFiles {
   return {
-    cmd: `@echo off\r\n"${node}" "${cli}" ${launcher.command}\r\n`,
+    cmd: `@echo off\r\nwscript.exe //nologo "%~dp0${launcher.name}.vbs"\r\n`,
     vbs: `\uFEFF${[
       "' Runs the launcher with no console window.",
       'Set sh = CreateObject("WScript.Shell")',

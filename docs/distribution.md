@@ -6,15 +6,22 @@ unpacking is the whole installation.
 ## What the zip contains
 
 ```
-dsh-upgrade-<version>/
+dsh-upgrade-<version>.zip
   .dsh-upgrade-release        version marker (proves this is an unpacked release)
   setup.cmd                   the one-shot installer
   src/                        the tool, run directly by Node 24 (no build step)
   engine-ps/tray.ps1          the tray companion
   plugins/opencode-session/   the vendored gateway plugin (MIT, with NOTICE)
   patches/manifest.json       the patch catalog
+  docs/                       the documents in this folder
   package.json, version.json, README.md, LICENSE
 ```
+
+The archive stores its contents at the root: unpack it into the folder the tool should live in,
+not into a subfolder, or `setup.cmd` will treat that subfolder as the tool.
+
+`scripts/` (including the packager) is not shipped: it is a maintainer tool that runs from a
+source checkout.
 
 No `node_modules`, no tests, no `dist/`. The tool has no runtime dependencies: Node 24 runs the
 TypeScript sources through type stripping.

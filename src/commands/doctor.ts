@@ -172,11 +172,21 @@ function sessionProbe(config: ReturnType<typeof loadConfig>): Probe {
       detail: 'disabled in the configuration; requests carry no gateway session header',
     }
   }
-  if (state.version !== undefined && !legacy) {
+  if (state.version !== undefined && state.bundle && !legacy) {
     return {
       id: 'opencode-session',
       ok: true,
       detail: `${state.version} in profile ${config.profile}${state.override ? ` (${config.opencodeSession.header} on ${config.opencodeSession.urlMarkers.join(', ')})` : ' (defaults)'}`,
+    }
+  }
+  if (state.version !== undefined && !state.bundle) {
+    // Installed as a plain dependency: its `cordis.patch.yml` row is never loaded, so the header
+    // is not sent even though the package is present.
+    return {
+      id: 'opencode-session',
+      ok: false,
+      detail: `${state.version} is installed in profile ${config.profile} but is not a profile layer; its row never loads`,
+      nextAction: 'run "dsh-upgrade opencode-session install" again, which records the layer through dsh plugin add',
     }
   }
   if (legacy && state.version === undefined) {

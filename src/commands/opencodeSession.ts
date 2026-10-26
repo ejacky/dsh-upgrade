@@ -233,6 +233,25 @@ function reportFailure(message: string, code: number, json: boolean): number {
 }
 
 /**
+ * Replace the operator's profile patch, keeping a copy first and writing atomically.
+ *
+ * The patch is the operator's file: it may hold settings this tool knows nothing about, so the
+ * original is always copied to `cordis.patch.yml.bak-<stamp>` before the replacement, and the
+ * replacement is written to a temporary file and renamed so a failed write cannot leave the
+ * profile without a patch layer at all.
+ * @param path - the profile patch file.
+ * @param original - the text that was read.
+ * @param next - the text to publish.
+ */
+function writeProfilePatch(path: string, original: string, next: string): void {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  writeFileSync(`${path}.bak-${stamp}`, original, 'utf8')
+  const temporary = `${path}.tmp`
+  writeFileSync(temporary, next, 'utf8')
+  renameSync(temporary, path)
+}
+
+/**
  * Run `opencode-session`.
  * @param args - arguments after the command name.
  * @param options - global options.
@@ -299,9 +318,11 @@ export function runOpencodeSession(args: readonly string[], options: RunOptions)
       let overrideRemoved = false
       const patchPath = join(directory, 'cordis.patch.yml')
       if (existsSync(patchPath)) {
-        const { text, removed: stripped } = withoutOverride(readFileSync(patchPath, 'utf8'))
+        const original = readFileSync(patchPath, 'utf8')
+        const { text, removed: stripped } = withoutOverride(original)
         if (stripped) {
-          writeFileSync(patchPath, text, 'utf8')
+          // Same rule as install: never replace the operator's patch without keeping the original.
+          writeProfilePatch(patchPath, original, text)
           overrideRemoved = true
         }
       }
@@ -337,12 +358,18 @@ export function runOpencodeSession(args: readonly string[], options: RunOptions)
     let kind: 'tarball' | 'directory' | 'npm' = 'npm'
     const notes: string[] = []
     if (source === 'builtin') {
-      const packed = packPlugin(pluginDir, join(config.root, 'state', 'plugins'))
-      spec = packed.spec
-      kind = packed.kind
-      if (packed.error !== undefined) notes.push(packed.error)
+      // A dry run must not write: packing produces a tarball under state/plugins.
+      if (flags.dryRun) {
+        spec = join(config.root, 'state', 'plugins', `${PACKAGE_NAME}-<packed>.tgz`)
+        kind = 'tarball'
+      } else {
+        const packed = packPlugin(pluginDir, join(config.root, 'state', 'plugins'))
+        spec = packed.spec
+        kind = packed.kind
+        if (packed.error !== undefined) notes.push(packed.error)
+      }
     } else {
-      spec = `${PACKAGE_NAME}@${pluginVersionOf(pluginDir) ?? 'latest'}`
+      spec = `${PACKAGE_NAME}@${config.opencodeSession.npmVersion}`
     }
 
     if (flags.dryRun) {
@@ -387,12 +414,7 @@ export function runOpencodeSession(args: readonly string[], options: RunOptions)
         next = cleared.text
         overrideWritten = cleared.removed
       }
-      if (next !== patch) {
-        // Keep one backup per install so a hand-edited patch is never lost.
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-        renameSync(patchPath, `${patchPath}.bak-${stamp}`)
-        writeFileSync(patchPath, next, 'utf8')
-      }
+      if (next !== patch) writeProfilePatch(patchPath, patch, next)
     }
 
     const after = profileStateOf(directory)
@@ -429,15 +451,3 @@ export function runOpencodeSession(args: readonly string[], options: RunOptions)
   }
 }
 
-/**
- * Read the vendored plugin's version.
- * @param pluginDir - the vendored package.
- */
-function pluginVersionOf(pluginDir: string): string | undefined {
-  try {
-    const manifest = JSON.parse(readFileSync(join(pluginDir, 'package.json'), 'utf8')) as { version?: unknown }
-    return typeof manifest.version === 'string' ? manifest.version : undefined
-  } catch {
-    return undefined
-  }
-}

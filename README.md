@@ -1,15 +1,14 @@
 # dsh-upgrade
 
-Zero-downtime upgrades for a **DeepSeek Harness source checkout** on Windows.
+Short-restart upgrades for a **DeepSeek Harness source checkout** on Windows.
 
-> **Status: M9.** Implemented: `version`, `init`, `status`, `check`, `stage` (clone/worktree,
-> uncommitted-change rescue, patches with a reverse check, install with stale-layout retry,
-> build, `--resume` after a build in an administrator console, isolated `DSH_HOME` smoke,
-> staged record, single-writer lock), `apply`/`rollback`, `toggle`/`start`/`stop`,
-> `shortcuts`, `doctor`, `patch list|verify|add|remove`, the `tray` companion, the `task`
-> watcher (it prepares a version; it never switches to it), the bundled `opencode-session`
-> plugin, `setup.cmd`, and the green zip. `log` is listed by `--help` and exits `5` until its
-> milestone lands.
+> **Status: v1.** Every command `--help` lists is implemented: `init`, `status`, `check`,
+> `stage` (clone or worktree, uncommitted-change rescue, patches with a reverse check, install
+> with stale-layout retry, build, `--resume` after a build in an administrator console,
+> isolated `DSH_HOME` smoke test, staged record, single-writer lock), `apply`/`rollback`,
+> `toggle`/`start`/`stop`, `shortcuts`, `doctor`, `patch list|verify|add|remove`,
+> `opencode-session install|remove|status`, `tray`, `task install|remove|status|run`, `log`,
+> and `version`. It ships as a green zip with `setup.cmd`.
 
 ## Who this is for
 
@@ -27,14 +26,17 @@ Two slot checkouts (`slots\a`, `slots\b`) sit behind one stable path
 1. `check` — fetch tags, compare strictly by semver (never downgrade).
 2. `stage` — prepare the **spare** slot: check out the tag, install, build, smoke-test it on
    a spare port with an isolated `DSH_HOME`.
-3. `apply` — stop the server, flip the junction, start, probe, and **roll back automatically**
-   when startup fails.
+3. `apply` — flip the junction, stop the old server, start the new one, probe it, and **roll
+   back automatically** when startup fails.
 
-`apply` and `rollback` always run as a detached helper process: the tool may be running
-inside the very server it is replacing, so it must never do this work in-process.
+`apply` runs as a detached helper process: the tool may be running inside the very server it
+is replacing, so it must never flip the junction in its own process. `rollback` is small
+enough to run in the foreground under the same lock.
 
 The bundled `x-opencode-session` support installs with `setup`, so `opencode-go` requests
-carry the header the gateway expects — no source patch, and it survives every upgrade.
+carry the header the gateway expects — no source patch, and it survives every upgrade. The
+installer needs a built harness under the stable path, so re-run that step after the first
+`apply`.
 
 ## Prerequisites
 
