@@ -59,15 +59,15 @@ test('an unknown command is a usage error', () => {
 })
 
 test('a stub command exits with the unimplemented code', () => {
-  const { status, stderr } = run(['apply'])
+  const { status, stderr } = run(['tray'])
   assert.equal(status, 5)
-  assert.match(stderr, /command "apply" is not implemented yet/)
+  assert.match(stderr, /command "tray" is not implemented yet/)
 })
 
 test('`help <command>` prints one command without failing', () => {
   const { status, stdout } = run(['help', 'apply'])
   assert.equal(status, 0)
-  assert.match(stdout, /^apply — switch to the staged version/m)
+  assert.match(stdout, /^apply .*switch to the staged version/m)
 })
 
 test('`help <unknown>` is a usage error', () => {
@@ -79,5 +79,7 @@ test('`help <unknown>` is a usage error', () => {
 test('the version subcommand matches the flag form', () => {
   assert.equal(run(['version']).stdout, run(['--version']).stdout)
 })
+
+
 
 

@@ -16,6 +16,7 @@
  */
 import { join } from 'node:path'
 import { readToolVersion } from './version.ts'
+import { runApply, runRollback } from './commands/apply.ts'
 import { runCheck } from './commands/check.ts'
 import { runInit } from './commands/init.ts'
 import { runStage } from './commands/stage.ts'
@@ -79,8 +80,13 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     implemented: true,
     run: runStage,
   },
-  apply: { summary: 'switch to the staged version; rolls back automatically when startup fails', implemented: false },
-  rollback: { summary: 'switch back to the previous version', implemented: false },
+  apply: {
+    summary: 'switch to the staged version; rolls back automatically when startup fails',
+    usage: '[--wait] [--no-start]',
+    implemented: true,
+    run: runApply,
+  },
+  rollback: { summary: 'switch back to the previous version', usage: '[--no-start]', implemented: true, run: runRollback },
   toggle: { summary: 'stop the web server when it runs, otherwise start it (one-icon behaviour)', implemented: false },
   start: { summary: 'start the web server and wait until it answers', implemented: false },
   stop: { summary: 'stop the web server', implemented: false },
@@ -241,6 +247,7 @@ function usageError(message: string): number {
 }
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2)))
+
 
 
 
