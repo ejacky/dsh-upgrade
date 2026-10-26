@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# build output (the tool runs from TypeScript sources on Node >=24)
+dist/
+
+# runtime state and logs (never committed)
+logs/
+state/
+rescued/
+tmp/
+
+# packaging
+*.tgz
+*.zip
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

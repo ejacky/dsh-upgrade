@@ -1,0 +1,39 @@
+{
+  "name": "dsh-upgrade",
+  "version": "0.1.0",
+  "description": "Zero-downtime upgrades for DeepSeek Harness source checkouts on Windows: dual-slot checkouts behind a stable-path junction.",
+  "type": "module",
+  "bin": {
+    "dsh-upgrade": "src/cli.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "start": "node src/cli.ts"
+  },
+  "files": [
+    "src",
+    "engine-ps",
+    "templates",
+    "plugins",
+    "docs",
+    "version.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "upgrade",
+    "zero-downtime",
+    "windows"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
