@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { readToolVersion } from './version.ts'
 import { runApply, runRollback } from './commands/apply.ts'
 import { runCheck } from './commands/check.ts'
+import { runDoctor } from './commands/doctor.ts'
 import { runShortcuts, runStart, runStop, runToggle } from './commands/power.ts'
 import { runInit } from './commands/init.ts'
 import { runStage } from './commands/stage.ts'
@@ -96,7 +97,12 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   start: { summary: 'start the web server and wait until it answers', implemented: true, run: runStart },
   stop: { summary: 'stop the web server', implemented: true, run: (_args, options) => runStop(options) },
-  doctor: { summary: 'probe the machine and report what needs fixing', usage: '[--live]', implemented: false },
+  doctor: {
+    summary: 'probe the machine and report what needs fixing',
+    usage: '[--fix]',
+    implemented: true,
+    run: runDoctor,
+  },
   'opencode-session': {
     summary: 'install, remove, or report the bundled x-opencode-session plugin',
     usage: '[install|remove|status|disable]',
@@ -263,6 +269,7 @@ function usageError(message: string): number {
 }
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2)))
+
 
 
 
