@@ -120,8 +120,8 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
     return code
   }
 
-  const lock = acquireLock(join(config.root, 'state', 'stage.lock'))
-  if (lock === undefined) return fail(3, 'another upgrade action is running (state/stage.lock is held)')
+  const lock = acquireLock(join(config.root, 'state', 'layout.lock'))
+  if (lock === undefined) return fail(3, 'another layout action is running (state/layout.lock is held)')
 
   try {
     const active = activeSlot(config)
@@ -204,5 +204,6 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
     lock.release()
   }
 }
+
 
 

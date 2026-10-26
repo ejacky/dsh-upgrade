@@ -179,7 +179,17 @@ export async function runApply(args: readonly string[], options: RunOptions): Pr
 
   if (flags.execute) {
     if (flags.slot === undefined || flags.tag === undefined) return 2
-    return executeSwitch(config, flags.slot, flags.tag, flags.noStart)
+    // The worker mutates the layout, so it holds the same lock as `stage`.
+    const workerLock = acquireLock(join(config.root, 'state', 'layout.lock'))
+    if (workerLock === undefined) {
+      process.stderr.write('dsh-upgrade apply: another layout action is running\n')
+      return 3
+    }
+    try {
+      return await executeSwitch(config, flags.slot, flags.tag, flags.noStart)
+    } finally {
+      workerLock.release()
+    }
   }
 
   const state = readState(statePathOf(config))
@@ -212,7 +222,7 @@ export async function runApply(args: readonly string[], options: RunOptions): Pr
     return 0
   }
 
-  const lock = acquireLock(join(config.root, 'state', 'apply.lock'))
+  const lock = acquireLock(join(config.root, 'state', 'layout.lock'))
   if (lock === undefined) {
     process.stderr.write('dsh-upgrade apply: another switch is running\n')
     return 3
@@ -251,4 +261,5 @@ export async function runRollback(args: readonly string[], options: RunOptions):
   }
   return executeSwitch(config, target, tag, noStart)
 }
+
 

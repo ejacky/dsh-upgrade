@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readlinkSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readlinkSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -142,4 +142,20 @@ test('a version that never answers is rolled back automatically', async (t) => {
   const after = state(root)
   assert.equal(after.deployed?.tag, 'dsh-v0.2.1-rc.2', 'the previous version stays recorded')
   assert.match(readlinkSync(join(root, 'deepseek-harness')), /dsh-slots.a$/, 'the stable path points back at slot a')
+})
+
+test('a slot whose entry is missing is rolled back and the old version keeps serving', async () => {
+  const { root, fakePnpm, webPort } = await fixture()
+  const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000' }
+  test.after(() => { spawnSync('taskkill', ['/PID', '0', '/T', '/F'], { windowsHide: true }); return stopPort(webPort) })
+  assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
+  assert.equal(run(['apply', '--wait', '--json'], root, env).status, 0)
+  assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.3', '--json'], root, env).status, 0)
+  rmSync(join(root, 'dsh-slots', 'b', 'apps', 'cli', 'lib', 'bin.js'), { force: true })
+  const failed = run(['apply', '--wait', '--json'], root, env)
+  assert.equal(failed.status, 4, failed.stdout + failed.stderr)
+  assert.equal(state(root).deployed?.tag, 'dsh-v0.2.1-rc.2')
+  assert.match(readlinkSync(join(root, 'deepseek-harness')), /dsh-slots.a$/)
+  const response = await fetch(`http://127.0.0.1:${webPort}/`)
+  assert.equal(response.status, 200, 'the old version must be serving again')
 })

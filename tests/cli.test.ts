@@ -10,7 +10,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const repoRoot = join(import.meta.dirname, '..')
@@ -82,4 +83,22 @@ test('the version subcommand matches the flag form', () => {
 
 
 
+
+
+test('a global flag without its value is a usage error, not a crash', () => {
+  const { status, stderr } = run(['--config'])
+  assert.equal(status, 2)
+  assert.match(stderr, /--config needs a path/)
+  assert.ok(!stderr.includes('at '), 'no stack trace on a usage error')
+})
+
+test('check on an uninitialized layout exits with the probe code and no stack', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-upgrade-noinit-'))
+  const result = spawnSync(process.execPath, [cliPath, 'check', '--json'], { cwd: dir, encoding: 'utf8' })
+  const status = result.status
+  const stderr = result.stderr
+  assert.equal(status, 4)
+  assert.match(stderr, /run "dsh-upgrade init"/)
+  assert.ok(!stderr.includes('at '), 'no stack trace before init')
+})
 

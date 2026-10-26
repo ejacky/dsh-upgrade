@@ -75,7 +75,8 @@ export function startService(config: Config, slotDirectory: string): StartedServ
   const entry = join(slotDirectory, 'apps', 'cli', 'lib', 'bin.js')
   if (!existsSync(entry)) throw new Error(`built CLI entry missing: ${entry}`)
   const logPath = join(config.root, 'logs', `web-${config.webPort}.log`)
-  const fd = openSync(logPath, 'a')
+  // Truncate: a token left by an earlier run must never be mistaken for this one's.
+  const fd = openSync(logPath, 'w')
   try {
     const child = spawn(process.execPath, [entry, 'web', '--port', String(config.webPort), '--no-open'], {
       cwd: slotDirectory,
@@ -106,7 +107,9 @@ export async function waitForService(config: Config, logPath: string): Promise<b
     let tokenised: string | undefined
     if (existsSync(logPath)) {
       const text = readFileSync(logPath, 'utf8')
-      tokenised = /http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/.exec(text)?.[0]
+      // The last match belongs to the newest start; earlier starts are already truncated, but a
+      // supervisor or a second start could append, so take the tail deliberately.
+      tokenised = [...text.matchAll(/http:\/\/127\.0\.0\.1:(\d+)\/\?token=\S+/g)].at(-1)?.[0]
     }
     for (const url of [tokenised, bare]) {
       if (url === undefined) continue
@@ -121,4 +124,5 @@ export async function waitForService(config: Config, logPath: string): Promise<b
   }
   return false
 }
+
 

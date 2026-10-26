@@ -10,6 +10,7 @@
  */
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
+import { portOwner } from './service.ts'
 import { join } from 'node:path'
 import type { Config } from './config.ts'
 import { removeTree } from './tree.ts'
@@ -102,7 +103,11 @@ export async function smoke(config: Config, slotDirectory: string, logPath: stri
       const bare = `http://127.0.0.1:${config.smokePort}/`
       if (!urls.includes(bare)) urls.push(bare)
       const status = await probe(bare)
-      if (status === 200 || status === 401) return { ok: true, urls }
+      // A 401 only proves *something* listens on that port; accept it solely when the listener is
+      // this smoke's own child, so an unrelated server cannot make a broken build look healthy.
+      if (status === 200 || (status === 401 && portOwner(config.smokePort) === child.pid)) {
+        return { ok: true, urls }
+      }
       if (exited !== undefined) {
         return { ok: false, urls, error: `server exited with ${exited} before answering` }
       }
@@ -122,3 +127,4 @@ export async function smoke(config: Config, slotDirectory: string, logPath: stri
     appendFileSync(logPath, `\n--- smoke output ---\n${output.join('\n')}\n`, 'utf8')
   }
 }
+
