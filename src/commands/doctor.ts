@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { loadConfig, resolveConfigPath } from '../engine/config.ts'
 import { describeLink } from '../engine/link.ts'
 import { pnpmInvocation } from '../engine/pnpm.ts'
+import { profileDirOf, profileStateOf } from '../engine/profile.ts'
 import { portOwner } from '../engine/service.ts'
 import { activeSlot, slotPath } from '../engine/slots.ts'
 import type { RunOptions } from '../cli.ts'
@@ -147,8 +148,53 @@ function probesOf(options: RunOptions): { probes: Probe[], configPath: string, c
         nextAction: 'grant this account full control on the slot directory',
       })
     }
+    probes.push(sessionProbe(config))
   }
   return { probes, configPath, config }
+}
+
+/**
+ * Whether the profile carries the gateway header, and by which mechanism.
+ *
+ * A provider `sessionHeader` in the profile patch and the bundled plugin do the same job. Two
+ * mechanisms are not two safety nets: they are two places to forget. The probe accepts either
+ * and says which one it found.
+ * @param config - resolved tool configuration.
+ */
+function sessionProbe(config: ReturnType<typeof loadConfig>): Probe {
+  const directory = profileDirOf(config)
+  const state = profileStateOf(directory)
+  const legacy = state.sessionHeader.length > 0
+  if (!config.opencodeSession.enabled) {
+    return {
+      id: 'opencode-session',
+      ok: true,
+      detail: 'disabled in the configuration; requests carry no gateway session header',
+    }
+  }
+  if (state.version !== undefined && !legacy) {
+    return {
+      id: 'opencode-session',
+      ok: true,
+      detail: `${state.version} in profile ${config.profile}${state.override ? ` (${config.opencodeSession.header} on ${config.opencodeSession.urlMarkers.join(', ')})` : ' (defaults)'}`,
+    }
+  }
+  if (legacy && state.version === undefined) {
+    return {
+      id: 'opencode-session',
+      ok: true,
+      detail: 'the profile patches the header through a provider sessionHeader (works, but does not survive an upstream change)',
+      nextAction: 'run "dsh-upgrade opencode-session install" to move it to the plugin',
+    }
+  }
+  return {
+    id: 'opencode-session',
+    ok: false,
+    detail: state.version === undefined
+      ? `not installed in profile ${config.profile}; the gateway session header is missing`
+      : `${state.version} is installed, but the profile still sets a provider sessionHeader`,
+    nextAction: 'run "dsh-upgrade opencode-session install"',
+  }
 }
 
 /**

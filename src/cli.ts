@@ -21,6 +21,7 @@ import { runCheck } from './commands/check.ts'
 import { runDoctor } from './commands/doctor.ts'
 import { runShortcuts, runStart, runStop, runToggle } from './commands/power.ts'
 import { runInit } from './commands/init.ts'
+import { runOpencodeSession } from './commands/opencodeSession.ts'
 import { runPatch } from './commands/patch.ts'
 import { runStage } from './commands/stage.ts'
 import { runStatus } from './commands/status.ts'
@@ -108,8 +109,9 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   'opencode-session': {
     summary: 'install, remove, or report the bundled x-opencode-session plugin',
-    usage: '[install|remove|status|disable]',
-    implemented: false,
+    usage: '[install|remove|status] [--dry-run]',
+    implemented: true,
+    run: runOpencodeSession,
   },
   patch: {
     summary: 'list, verify, add, or remove source patches',

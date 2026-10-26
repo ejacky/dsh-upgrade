@@ -11,16 +11,17 @@
   },
   "scripts": {
     "test": "node --test",
+    "package": "node scripts/package.mjs",
     "typecheck": "tsc --noEmit",
     "start": "node src/cli.ts"
   },
   "files": [
     "src",
     "engine-ps",
-    "templates",
     "patches",
     "plugins",
-    "docs",
+    "scripts",
+    "setup.cmd",
     "version.json",
     "LICENSE",
     "README.md"

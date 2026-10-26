@@ -1,0 +1,39 @@
+{
+  "name": "dsh-x-opencode-session",
+  "version": "0.1.1",
+  "description": "DeepSeek Harness plugin: send the conversation id as x-opencode-session on model requests to an OpenCode gateway. Vendored from dsh-x-opencode-session 0.1.0.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
+  ],
+  "license": "MIT",
+  "author": "Coco-king",
+  "contributors": [
+    "dsh-upgrade (vendored copy with validated config)"
+  ],
+  "homepage": "https://github.com/Coco-king/dsh-x-opencode-session#readme",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "opencode",
+    "x-opencode-session"
+  ]
+}

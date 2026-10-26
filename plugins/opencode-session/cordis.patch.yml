@@ -1,0 +1,10 @@
+# The x-opencode-session layer: one host row over the profile.
+#
+# The row name resolves from the profile's own node_modules, where
+# `dsh plugin --profile <profile> add <this package>` installed it. Settings come from
+# `dsh-upgrade.json` (opencodeSession.header / urlMarkers); when they differ from the
+# defaults below, `dsh-upgrade opencode-session install` appends an id-targeted override to
+# the profile patch, which applies after this layer.
+- insert:
+    - id: x-opencode-session
+      name: dsh-x-opencode-session

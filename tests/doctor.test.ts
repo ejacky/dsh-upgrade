@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -58,4 +58,39 @@ test('doctor --fix keeps keys this build does not know', () => {
   run(['doctor', '--fix'], root)
   const config = JSON.parse(readFileSync(join(root, 'dsh-upgrade.json'), 'utf8')) as { future?: number, manualBuild?: boolean }
   assert.equal(config.future, 1)
+})
+
+test('doctor names which mechanism provides the gateway session header', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-upgrade-doctor-session-'))
+  const home = join(root, 'dsh-home')
+  const profile = join(home, 'profiles', 'web')
+  mkdirSync(profile, { recursive: true })
+  writeFileSync(join(root, 'dsh-upgrade.json'), `${JSON.stringify({ schema: 1, root, webPort: 39877, smokePort: 39878 }, null, 2)}\n`, 'utf8')
+
+  const probeOf = (): { ok: boolean, detail: string } => {
+    const result = run(['doctor', '--json'], root, { DSH_HOME: home })
+    const report = JSON.parse(result.stdout) as { probes: { id: string, ok: boolean, detail: string }[] }
+    const probe = report.probes.find(candidate => candidate.id === 'opencode-session')
+    assert.notEqual(probe, undefined, 'doctor must probe the session header')
+    return probe as { ok: boolean, detail: string }
+  }
+
+  // Nothing installed: the header is missing.
+  writeFileSync(join(profile, 'package.json'), '{"name":"dsh-profile-web","private":true}\n', 'utf8')
+  const missing = probeOf()
+  assert.equal(missing.ok, false)
+  assert.match(missing.detail, /not installed in profile web/)
+
+  // The old mechanism: a provider sessionHeader.
+  writeFileSync(join(profile, 'cordis.patch.yml'), '- id: llm-pi-ai\n  config:\n    providers:\n      opencode-go:\n        sessionHeader: x-opencode-session\n', 'utf8')
+  const legacy = probeOf()
+  assert.equal(legacy.ok, true)
+  assert.match(legacy.detail, /does not survive an upstream change/)
+
+  // The plugin, with the legacy line gone.
+  writeFileSync(join(profile, 'cordis.patch.yml'), '- id: llm-pi-ai\n  config: {}\n', 'utf8')
+  writeFileSync(join(profile, 'package.json'), '{"name":"dsh-profile-web","private":true,"dependencies":{"dsh-x-opencode-session":"0.1.1"}}\n', 'utf8')
+  const plugin = probeOf()
+  assert.equal(plugin.ok, true)
+  assert.match(plugin.detail, /^0\.1\.1 in profile web/)
 })

@@ -2,14 +2,14 @@
 
 Zero-downtime upgrades for a **DeepSeek Harness source checkout** on Windows.
 
-> **Status: M8.** Implemented: `version`, `init`, `status`, `check`, `stage` (clone/worktree,
+> **Status: M9.** Implemented: `version`, `init`, `status`, `check`, `stage` (clone/worktree,
 > uncommitted-change rescue, patches with a reverse check, install with stale-layout retry,
 > build, `--resume` after a build in an administrator console, isolated `DSH_HOME` smoke,
 > staged record, single-writer lock), `apply`/`rollback`, `toggle`/`start`/`stop`,
-> `shortcuts`, `doctor`, `patch list|verify|add|remove`, the `tray` companion, and the
-> `task` watcher (it prepares a version; it never switches to it).
-> Remaining v1 commands are listed by `--help` and exit with `5` (not implemented) until
-> their milestone lands.
+> `shortcuts`, `doctor`, `patch list|verify|add|remove`, the `tray` companion, the `task`
+> watcher (it prepares a version; it never switches to it), the bundled `opencode-session`
+> plugin, `setup.cmd`, and the green zip. `log` is listed by `--help` and exits `5` until its
+> milestone lands.
 
 ## Who this is for
 
