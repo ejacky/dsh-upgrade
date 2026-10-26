@@ -179,7 +179,8 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
   const bin = join(config.root, 'bin')
   const names = ['dsh-upgrade-start', 'dsh-upgrade-update']
   mkdirSync(bin, { recursive: true })
-  const desktop = join(process.env['USERPROFILE'] ?? '', 'Desktop')
+  const desktopProbe = spawnSync('pwsh', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"], { encoding: 'utf8' })
+  const desktop = (desktopProbe.stdout ?? '').trim() !== '' ? (desktopProbe.stdout ?? '').trim() : join(process.env['USERPROFILE'] ?? '', 'Desktop')
 
   if (remove) {
     for (const name of names) {
@@ -205,13 +206,15 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
     const cmd = join(bin, `${name}.cmd`)
     writeFileSync(cmd, `@echo off\r\n"${node}" "${cli}" ${command}\r\n`, 'ascii')
     const vbs = join(bin, `${name}.vbs`)
-    writeFileSync(vbs, [
+    // Write the launcher as UTF-16LE with a BOM: wscript reads that as Unicode, so a path with
+    // non-ASCII characters (Chinese user names, OneDrive folders) survives.
+    writeFileSync(vbs, `\uFEFF${[
       "' Runs the launcher with no console window.",
       'Set sh = CreateObject("WScript.Shell")',
       `sh.CurrentDirectory = "${bin}"`,
-      `sh.Run "cmd /c ""${cmd}""", 0, True`,
+      `sh.Run """${node}"" ""${cli}"" ${command}", 0, True`,
       '',
-    ].join('\r\n'), 'ascii')
+    ].join('\r\n')}`, 'utf16le')
     const link = join(desktop, `${name}.lnk`)
     script.push(`$s = $shell.CreateShortcut("${link}")`)
     script.push('$s.TargetPath = "C:\\Windows\\System32\\wscript.exe"')
@@ -236,6 +239,7 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
   ].join('\n') + '\n')
   return 0
 }
+
 
 
 
