@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { readToolVersion } from './version.ts'
 import { runCheck } from './commands/check.ts'
 import { runInit } from './commands/init.ts'
+import { runStage } from './commands/stage.ts'
 import { runStatus } from './commands/status.ts'
 
 /** Documented exit codes. Scripts and the tray app branch on these. */
@@ -43,7 +44,7 @@ interface CommandSpec {
   /** Argument hint shown after the command name. */
   readonly usage?: string
   /** Runs the command; returns the process exit code. */
-  run?: (args: readonly string[], options: RunOptions) => number
+  run?: (args: readonly string[], options: RunOptions) => number | Promise<number>
 }
 
 /** Global options already parsed out of argv. */
@@ -72,7 +73,12 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   status: { summary: 'report versions, slots, staged version, and the last error', implemented: true, run: runStatus },
   check: { summary: 'fetch upstream tags and report whether a newer version exists', usage: '[--no-fetch]', implemented: true, run: runCheck },
-  stage: { summary: 'prepare the spare slot and smoke-test it, without touching the serving slot', implemented: false },
+  stage: {
+    summary: 'prepare the spare slot and smoke-test it, without touching the serving slot',
+    usage: '[--tag <tag>] [--skip-build] [--skip-install] [--force] [--no-fetch]',
+    implemented: true,
+    run: runStage,
+  },
   apply: { summary: 'switch to the staged version; rolls back automatically when startup fails', implemented: false },
   rollback: { summary: 'switch back to the previous version', implemented: false },
   toggle: { summary: 'stop the web server when it runs, otherwise start it (one-icon behaviour)', implemented: false },
@@ -188,7 +194,7 @@ function parseGlobal(argv: readonly string[]): GlobalFlags {
  * @param argv - arguments after the script path.
  * @returns the process exit code.
  */
-export function main(argv: readonly string[]): number {
+export async function main(argv: readonly string[]): Promise<number> {
   const flags = parseGlobal(argv)
   if (flags.version) return printVersion({ json: flags.json })
 
@@ -216,7 +222,7 @@ export function main(argv: readonly string[]): number {
     process.stderr.write(`dsh-upgrade: command "${name}" is not implemented yet\n`)
     return EXIT.unimplemented
   }
-  return spec.run(args, {
+  return await spec.run(args, {
     json: flags.json,
     cwd: process.cwd(),
     toolRoot: join(import.meta.dirname, '..'),
@@ -234,6 +240,7 @@ function usageError(message: string): number {
   return EXIT.usage
 }
 
-if (import.meta.main) process.exit(main(process.argv.slice(2)))
+if (import.meta.main) process.exit(await main(process.argv.slice(2)))
+
 
 

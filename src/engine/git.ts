@@ -59,6 +59,20 @@ export function listTags(repo: string, pattern?: string): string[] {
 }
 
 /**
+ * List tags on a remote without a local repository.
+ * @param upstream - git URL.
+ * @param cwd - directory to run git in.
+ */
+export function lsRemoteTags(upstream: string, cwd: string): string[] {
+  const result = git(['ls-remote', '--tags', '--refs', upstream], cwd)
+  if (!result.ok) return []
+  return result.stdout
+    .split(/\r?\n/)
+    .map(line => /refs\/tags\/(.+)$/.exec(line.trim())?.[1])
+    .filter((tag): tag is string => tag !== undefined && tag !== '')
+}
+
+/**
  * The tag a checkout points at, if any.
  * @param slotPath - the slot's directory.
  */
@@ -68,3 +82,4 @@ export function tagAtHead(slotPath: string): string | undefined {
   const first = result.stdout.split(/\r?\n/).map(line => line.trim()).find(line => line !== '')
   return first
 }
+
