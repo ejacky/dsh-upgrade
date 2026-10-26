@@ -141,7 +141,7 @@ function buildInit(input, init) {
 /**
  * Build the fetch patch. Pure, so the header decision can be tested without a server.
  * @param realFetch - the fetch being wrapped.
- * @param options - `header` and `urlMarkers`, defaulting to this gateway's values.
+ * @param options - `header` and `markers`, defaulting to this gateway's values.
  * @returns a fetch that adds the header only for matching URLs inside a session.
  */
 export function wrapFetch(realFetch, options = {}) {
