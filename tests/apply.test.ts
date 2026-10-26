@@ -104,12 +104,17 @@ test('apply flips the stable path, serves the staged slot, and records it', asyn
   assert.equal(run(['stop', '--json'], root, env).status, 5) // `stop` is still a stub
 })
 
-test.skip('a version that never answers is rolled back automatically (follow-up: multi-slot fixture)', async () => {
+// TODO(M3): the second stage in this fixture exits 4 before the switch runs; re-enable once the
+// multi-slot fixture (worktree of the cloned slot) is fixed. The rollback path itself is implemented.
+test.skip('a version that never answers is rolled back automatically', async () => {
   const { root, fakePnpm } = await fixture()
   const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '3000' }
-  assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
-  assert.equal(run(['apply', '--wait', '--no-start', '--json'], root, env).status, 0)
-  assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.3', '--json'], root, env).status, 0)
+  const firstStage = run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env)
+  assert.equal(firstStage.status, 0, 'stage1: ' + firstStage.stderr)
+  const firstApply = run(['apply', '--wait', '--no-start', '--json'], root, env)
+  assert.equal(firstApply.status, 0, 'apply1: ' + firstApply.stderr + firstApply.stdout + ' staged=' + JSON.stringify(state(root).staged))
+  const second = run(['stage', '--tag', 'dsh-v0.2.1-rc.3', '--json'], root, env)
+  assert.equal(second.status, 0, 'second stage failed: ' + second.stderr + second.stdout)
   const broken = run(['stage', '--tag', 'dsh-v0.2.1-rc.3', '--force', '--json'], root, { ...env, FAKE_BREAK_ENTRY: '1' })
   assert.equal(broken.status, 0, broken.stderr)
   const switched = run(['apply', '--wait', '--json'], root, env)
@@ -118,4 +123,7 @@ test.skip('a version that never answers is rolled back automatically (follow-up:
   assert.equal(after.deployed?.tag, 'dsh-v0.2.1-rc.2', 'the previous version stays recorded')
   assert.match(readlinkSync(join(root, 'deepseek-harness')), /dsh-slots.a$/)
 })
+
+
+
 
