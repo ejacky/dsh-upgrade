@@ -97,7 +97,17 @@ async function switchTo(
   try {
     started = startService(config, directory)
   } catch (error) {
-    if (previous !== undefined) setLink(config.stablePath, slotPath(config, previous))
+    // The old server is already stopped: restore the previous slot *and* start it again,
+    // otherwise a failed switch would leave the machine serving nothing.
+    if (previous !== undefined) {
+      setLink(config.stablePath, slotPath(config, previous))
+      try {
+        const restarted = startService(config, slotPath(config, previous))
+        await waitForService(config, restarted.logPath)
+      } catch {
+        // Reported below; the operator can start the old version by hand.
+      }
+    }
     return { ok: false, slot: target, tag, error: (error as Error).message }
   }
   const ready = await waitForService(config, started.logPath)
@@ -241,3 +251,4 @@ export async function runRollback(args: readonly string[], options: RunOptions):
   }
   return executeSwitch(config, target, tag, noStart)
 }
+

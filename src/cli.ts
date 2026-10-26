@@ -201,7 +201,12 @@ function parseGlobal(argv: readonly string[]): GlobalFlags {
  * @returns the process exit code.
  */
 export async function main(argv: readonly string[]): Promise<number> {
-  const flags = parseGlobal(argv)
+  let flags: GlobalFlags
+  try {
+    flags = parseGlobal(argv)
+  } catch (error) {
+    return usageError((error as Error).message)
+  }
   if (flags.version) return printVersion({ json: flags.json })
 
   const root = process.cwd()
@@ -247,6 +252,7 @@ function usageError(message: string): number {
 }
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2)))
+
 
 
 

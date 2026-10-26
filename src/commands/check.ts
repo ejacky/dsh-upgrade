@@ -7,6 +7,7 @@
  *
  * @module dsh-upgrade/commands/check
  */
+import { existsSync } from 'node:fs'
 import { loadConfig, resolveConfigPath } from '../engine/config.ts'
 import { readState, statePathOf, writeState } from '../engine/state.ts'
 import { activeSlot, slotExists, slotPath, SLOT_NAMES } from '../engine/slots.ts'
@@ -61,6 +62,10 @@ export function runCheck(args: readonly string[], options: RunOptions): number {
   }
 
   const configPath = resolveConfigPath(options.configPath, options.cwd, options.toolRoot)
+  if (!existsSync(configPath)) {
+    process.stderr.write(`dsh-upgrade check: ${configPath} not found (run "dsh-upgrade init")\n`)
+    return 4
+  }
   const config = loadConfig(configPath)
   const statePath = statePathOf(config)
   const state = readState(statePath)
@@ -123,4 +128,5 @@ export function runCheck(args: readonly string[], options: RunOptions): number {
   }
   return fetched.ok ? 0 : 4
 }
+
 
