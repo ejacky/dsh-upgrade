@@ -2,11 +2,12 @@
 
 Zero-downtime upgrades for a **DeepSeek Harness source checkout** on Windows.
 
-> **Status: M7.** Implemented: `version`, `init`, `status`, `check`, `stage` (clone/worktree,
+> **Status: M8.** Implemented: `version`, `init`, `status`, `check`, `stage` (clone/worktree,
 > uncommitted-change rescue, patches with a reverse check, install with stale-layout retry,
 > build, `--resume` after a build in an administrator console, isolated `DSH_HOME` smoke,
 > staged record, single-writer lock), `apply`/`rollback`, `toggle`/`start`/`stop`,
-> `shortcuts`, `doctor`, `patch list|verify|add|remove`, and the `tray` companion.
+> `shortcuts`, `doctor`, `patch list|verify|add|remove`, the `tray` companion, and the
+> `task` watcher (it prepares a version; it never switches to it).
 > Remaining v1 commands are listed by `--help` and exit with `5` (not implemented) until
 > their milestone lands.
 
@@ -58,7 +59,7 @@ dsh-upgrade opencode-session [install|remove|status|disable]
 dsh-upgrade patch list | verify | add | remove
 dsh-upgrade shortcuts [--install|--remove]
 dsh-upgrade tray
-dsh-upgrade task [install|remove|status] [--interval <min>] [--s4u]
+dsh-upgrade task [install|remove|status|run] [--interval <min>] [--s4u] [--dry-run]
 dsh-upgrade log [--tail <n>]
 ```
 

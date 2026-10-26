@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig, resolveConfigPath } from '../engine/config.ts'
+import { cliEntryPath } from '../engine/entry.ts'
 import { portOwner, startService, stopService, waitForService } from '../engine/service.ts'
 import { activeSlot, slotPath } from '../engine/slots.ts'
 import type { RunOptions } from '../cli.ts'
@@ -160,6 +161,55 @@ export async function runToggle(args: readonly string[], options: RunOptions): P
   return 0
 }
 
+/** One desktop launcher: what it is called, what it runs, and whether it waits. */
+export interface Launcher {
+  /** File name stem of the `.cmd`/`.vbs`/`.lnk`. */
+  readonly name: string
+  /** CLI arguments the launcher passes. */
+  readonly command: string
+  /** `false` for a program that outlives its launcher, like the tray. */
+  readonly wait: boolean
+}
+
+/** The launchers `shortcuts` installs. */
+export const LAUNCHERS: readonly Launcher[] = [
+  { name: 'dsh-upgrade-start', command: 'toggle --yes', wait: true },
+  { name: 'dsh-upgrade-update', command: 'apply --wait', wait: true },
+  { name: 'dsh-upgrade-tray', command: 'tray', wait: false },
+]
+
+/** The two wrapper files of one launcher. */
+export interface LauncherFiles {
+  /** Batch wrapper, for running from a console. */
+  readonly cmd: string
+  /** Hidden `wscript` wrapper, for the desktop shortcut. */
+  readonly vbs: string
+}
+
+/**
+ * Render one launcher's wrappers.
+ *
+ * The `.vbs` is UTF-16LE with a BOM because `wscript` reads that as Unicode, so a path with
+ * non-ASCII characters (Chinese user names, OneDrive folders) survives; the `.cmd` stays
+ * ASCII, because `cmd.exe` reads it in the console code page.
+ * @param launcher - which launcher.
+ * @param bin - directory the wrapper runs from.
+ * @param cli - absolute path of the CLI entry.
+ * @param node - absolute path of the node executable.
+ */
+export function launcherFiles(launcher: Launcher, bin: string, cli: string, node: string): LauncherFiles {
+  return {
+    cmd: `@echo off\r\n"${node}" "${cli}" ${launcher.command}\r\n`,
+    vbs: `\uFEFF${[
+      "' Runs the launcher with no console window.",
+      'Set sh = CreateObject("WScript.Shell")',
+      `sh.CurrentDirectory = "${bin}"`,
+      `sh.Run """${node}"" ""${cli}"" ${launcher.command}", 0, ${launcher.wait ? 'True' : 'False'}`,
+      '',
+    ].join('\r\n')}`,
+  }
+}
+
 /**
  * The desktop launchers, as hidden wrappers plus shortcuts.
  * @param args - `--install` or `--remove`.
@@ -177,50 +227,35 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
   if (context === undefined) return 4
   const { config } = context
   const bin = join(config.root, 'bin')
-  // The third element decides whether the wrapper waits: the tray outlives its launcher.
-  const wrappers: readonly (readonly [string, string, boolean])[] = [
-    ['dsh-upgrade-start', 'toggle --yes', true],
-    ['dsh-upgrade-update', 'apply --wait', true],
-    ['dsh-upgrade-tray', 'tray', false],
-  ]
   mkdirSync(bin, { recursive: true })
   const desktopProbe = spawnSync('pwsh', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"], { encoding: 'utf8' })
   const desktop = (desktopProbe.stdout ?? '').trim() !== '' ? (desktopProbe.stdout ?? '').trim() : join(process.env['USERPROFILE'] ?? '', 'Desktop')
 
   if (remove) {
-    for (const [name] of wrappers) {
-      rmSync(join(bin, `${name}.cmd`), { force: true })
-      rmSync(join(bin, `${name}.vbs`), { force: true })
-      rmSync(join(desktop, `${name}.lnk`), { force: true })
+    for (const launcher of LAUNCHERS) {
+      rmSync(join(bin, `${launcher.name}.cmd`), { force: true })
+      rmSync(join(bin, `${launcher.name}.vbs`), { force: true })
+      rmSync(join(desktop, `${launcher.name}.lnk`), { force: true })
     }
     rmSync(join(bin, 'create-shortcuts.ps1'), { force: true })
     process.stdout.write('removed launchers\n')
     return 0
   }
 
-  const cli = import.meta.filename
+  const cli = cliEntryPath()
   const node = process.execPath
   const script = [
     '$ErrorActionPreference = "Stop"',
     '$shell = New-Object -ComObject WScript.Shell',
   ]
-  for (const [name, command, wait] of wrappers) {
-    const cmd = join(bin, `${name}.cmd`)
-    writeFileSync(cmd, `@echo off\r\n"${node}" "${cli}" ${command}\r\n`, 'ascii')
-    const vbs = join(bin, `${name}.vbs`)
-    // Write the launcher as UTF-16LE with a BOM: wscript reads that as Unicode, so a path with
-    // non-ASCII characters (Chinese user names, OneDrive folders) survives.
-    writeFileSync(vbs, `\uFEFF${[
-      "' Runs the launcher with no console window.",
-      'Set sh = CreateObject("WScript.Shell")',
-      `sh.CurrentDirectory = "${bin}"`,
-      `sh.Run """${node}"" ""${cli}"" ${command}", 0, ${wait ? 'True' : 'False'}`,
-      '',
-    ].join('\r\n')}`, 'utf16le')
-    const link = join(desktop, `${name}.lnk`)
+  for (const launcher of LAUNCHERS) {
+    const files = launcherFiles(launcher, bin, cli, node)
+    writeFileSync(join(bin, `${launcher.name}.cmd`), files.cmd, 'ascii')
+    writeFileSync(join(bin, `${launcher.name}.vbs`), files.vbs, 'utf16le')
+    const link = join(desktop, `${launcher.name}.lnk`)
     script.push(`$s = $shell.CreateShortcut("${link}")`)
     script.push('$s.TargetPath = "C:\\Windows\\System32\\wscript.exe"')
-    script.push(`$s.Arguments = """${vbs}"""`)
+    script.push(`$s.Arguments = """${join(bin, `${launcher.name}.vbs`)}"""`)
     script.push(`$s.WorkingDirectory = "${bin}"`)
     script.push('$s.Save()')
   }
@@ -232,12 +267,12 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
     return 4
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify({ ok: true, launchers: wrappers.map(([name]) => join(desktop, `${name}.lnk`)) })}\n`)
+    process.stdout.write(`${JSON.stringify({ ok: true, launchers: LAUNCHERS.map(launcher => join(desktop, `${launcher.name}.lnk`)) })}\n`)
     return 0
   }
   process.stdout.write([
     'created launchers:',
-    ...wrappers.map(([name]) => `  ${join(desktop, `${name}.lnk`)}`),
+    ...LAUNCHERS.map(launcher => `  ${join(desktop, `${launcher.name}.lnk`)}`),
   ].join('\n') + '\n')
   return 0
 }

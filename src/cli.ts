@@ -24,6 +24,7 @@ import { runInit } from './commands/init.ts'
 import { runPatch } from './commands/patch.ts'
 import { runStage } from './commands/stage.ts'
 import { runStatus } from './commands/status.ts'
+import { runTask } from './commands/task.ts'
 import { runTray } from './commands/tray.ts'
 
 /** Documented exit codes. Scripts and the tray app branch on these. */
@@ -123,7 +124,12 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     run: runShortcuts,
   },
   tray: { summary: 'run the tray companion', usage: '[--dry-run]', implemented: true, run: runTray },
-  task: { summary: 'install, remove, or report the scheduled check task', usage: '[install|remove|status]', implemented: false },
+  task: {
+    summary: 'install, remove, or report the scheduled check task',
+    usage: '[install|remove|status|run] [--interval <min>] [--s4u] [--dry-run] [--name <task>]',
+    implemented: true,
+    run: runTask,
+  },
   log: { summary: 'print the recent log lines', usage: '[--tail <n>]', implemented: false },
 }
 

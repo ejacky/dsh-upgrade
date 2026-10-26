@@ -60,9 +60,9 @@ test('an unknown command is a usage error', () => {
 })
 
 test('a stub command exits with the unimplemented code', () => {
-  const { status, stderr } = run(['task'])
+  const { status, stderr } = run(['log'])
   assert.equal(status, 5)
-  assert.match(stderr, /command "task" is not implemented yet/)
+  assert.match(stderr, /command "log" is not implemented yet/)
 })
 
 test('`help <command>` prints one command without failing', () => {

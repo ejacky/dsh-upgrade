@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RunOptions } from '../cli.ts'
 import { loadConfig, resolveConfigPath } from '../engine/config.ts'
+import { cliEntryPath } from '../engine/entry.ts'
 
 /** Companion script, relative to the tool root. Splitting it keeps forward slashes working. */
 export const TRAY_SCRIPT = 'engine-ps/tray.ps1'
@@ -52,7 +53,7 @@ function launchOf(toolRoot: string, configPath: string, node: string): TrayLaunc
       '-ToolRoot',
       toolRoot,
       '-Cli',
-      join(toolRoot, 'src', 'cli.ts'),
+      cliEntryPath(),
       '-Config',
       configPath,
       '-Node',
@@ -114,7 +115,7 @@ export function runTray(args: readonly string[], options: RunOptions): number {
   if (dryRun) {
     const command = quote(launch)
     if (options.json) {
-      process.stdout.write(`${JSON.stringify({ ok: true, script, cli: join(options.toolRoot, 'src', 'cli.ts'), config: configPath, command, args: launch.args })}\n`)
+      process.stdout.write(`${JSON.stringify({ ok: true, script, cli: cliEntryPath(), config: configPath, command, args: launch.args })}\n`)
     } else {
       process.stdout.write(`${command}\n`)
     }
