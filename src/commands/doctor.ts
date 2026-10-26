@@ -79,13 +79,6 @@ function probesOf(options: RunOptions): { probes: Probe[], configPath: string, c
     nextAction: 'run "dsh-upgrade init"',
     blocking: true,
   })
-  probes.push({
-    id: 'config',
-    ok: config !== undefined,
-    detail: config !== undefined ? `configuration at ${configPath}` : `no configuration at ${configPath}`,
-    nextAction: 'run "dsh-upgrade init"',
-    blocking: true,
-  })
 
   const pwsh = probeCommand('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'])
   probes.push({
@@ -174,8 +167,7 @@ export function runDoctor(args: readonly string[], options: RunOptions): number 
       // Patch only this key: rewriting the parsed config would drop fields this build does not know.
       const raw = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>
       raw['manualBuild'] = true
-      writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}
-`, 'utf8')
+      writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8')
       process.stdout.write('set manualBuild: true — build from an administrator console\n')
     }
   }
