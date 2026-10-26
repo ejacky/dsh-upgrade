@@ -52,18 +52,19 @@ machine's protection software forces builds into an administrator console.
 ## Command surface
 
 ```
-dsh-upgrade init [--root <dir>] [--upstream <url>] [--tag <tag>]
+dsh-upgrade init [--root <dir>] [--upstream <url>] [--force]
 dsh-upgrade status | check | stage | apply | rollback | toggle | start | stop
-dsh-upgrade doctor [--live]
-dsh-upgrade opencode-session [install|remove|status|disable]
+dsh-upgrade doctor [--fix]
+dsh-upgrade opencode-session [install|remove|status] [--dry-run]
 dsh-upgrade patch list | verify | add | remove
 dsh-upgrade shortcuts [--install|--remove]
-dsh-upgrade tray
+dsh-upgrade tray [--dry-run]
 dsh-upgrade task [install|remove|status|run] [--interval <min>] [--s4u] [--dry-run]
-dsh-upgrade log [--tail <n>]
+dsh-upgrade log [--tail <n>] [--file <name>] [--list]
 ```
 
-Every command accepts `--json`.
+Every command accepts `--json` and `--config <path>`. Full reference:
+[docs/commands.md](docs/commands.md).
 
 ## Exit codes
 
@@ -73,7 +74,7 @@ Every command accepts `--json`.
 | `2` | usage error (unknown command, bad arguments) |
 | `3` | needs a human (for example: the build must run from an administrator console) |
 | `4` | an environment probe failed |
-| `5` | command not implemented yet |
+| `5` | reserved: a command in the surface that is not implemented |
 
 ## Development
 
@@ -81,15 +82,30 @@ Every command accepts `--json`.
 node src/cli.ts --help      # run from sources (Node ≥ 24)
 npm test                    # node --test
 npm run typecheck           # tsc --noEmit (dev dependency)
+node scripts/package.mjs    # build dist/dsh-upgrade-<version>.zip
 ```
 
+## Documentation
+
+| Document | Read it when |
+|---|---|
+| [quick-start](docs/quick-start.md) | installing the zip and doing the first upgrade |
+| [commands](docs/commands.md) | you need a flag, a JSON field, or an exit code |
+| [design](docs/design.md) | you are changing the tool, or wondering why a rule exists |
+| [troubleshooting](docs/troubleshooting.md) | something failed |
+| [patch-tracks](docs/patch-tracks.md) | writing, verifying, or retiring a source patch |
+| [distribution](docs/distribution.md) | building or installing a release, migrating from the legacy scripts |
+| [opencode-session](docs/opencode-session.md) | the gateway session header, and its settings |
+| [decisions](docs/decisions/0001-no-windows-service.md) | why nothing is a Windows service, and why there is no `dsh` shim |
+
 On Windows the tool is the only writer of the spare slot and the only process that flips the
-stable-path junction. See `docs/design.md` (added in M10) for the invariants and the reasons
-behind them.
+stable-path junction.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see [LICENSE](LICENSE). The bundled `plugins/opencode-session` is a vendored copy of
+`dsh-x-opencode-session` by Coco-king (MIT); see its `NOTICE.md`.
+
 
 
 

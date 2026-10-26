@@ -40,7 +40,7 @@ test('--version --json emits the metadata object', () => {
   assert.equal(typeof parsed['schema'], 'number')
 })
 
-test('--help lists every v1 command and marks the stubs', () => {
+test('--help lists every v1 command, and none of them is a stub', () => {
   const { status, stdout } = run(['--help'])
   assert.equal(status, 0)
   for (const command of [
@@ -49,7 +49,7 @@ test('--help lists every v1 command and marks the stubs', () => {
   ]) {
     assert.match(stdout, new RegExp(`^  ${command}\\b`, 'm'), `help must list ${command}`)
   }
-  assert.match(stdout, /not implemented yet/)
+  assert.doesNotMatch(stdout, /\(not implemented yet\)/)
 })
 
 test('an unknown command is a usage error', () => {
@@ -59,10 +59,14 @@ test('an unknown command is a usage error', () => {
   assert.match(stderr, /--help/)
 })
 
-test('a stub command exits with the unimplemented code', () => {
-  const { status, stderr } = run(['log'])
-  assert.equal(status, 5)
-  assert.match(stderr, /command "log" is not implemented yet/)
+test('every documented command runs its implementation, not a stub', () => {
+  // `log` needs a configuration and fails with the probe code; what matters here is that the
+  // command is dispatched instead of refusing as unimplemented.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-upgrade-dispatch-'))
+  const { status, stderr } = spawnSync(process.execPath, [cliPath, 'log'], { cwd: dir, encoding: 'utf8' }) as unknown as { status: number, stderr: string }
+  assert.equal(status, 4)
+  assert.doesNotMatch(stderr, /not implemented yet/)
+  assert.match(stderr, /run "dsh-upgrade init"/)
 })
 
 test('`help <command>` prints one command without failing', () => {

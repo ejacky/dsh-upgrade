@@ -21,6 +21,7 @@ import { runCheck } from './commands/check.ts'
 import { runDoctor } from './commands/doctor.ts'
 import { runShortcuts, runStart, runStop, runToggle } from './commands/power.ts'
 import { runInit } from './commands/init.ts'
+import { runLog } from './commands/log.ts'
 import { runOpencodeSession } from './commands/opencodeSession.ts'
 import { runPatch } from './commands/patch.ts'
 import { runStage } from './commands/stage.ts'
@@ -132,7 +133,7 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     implemented: true,
     run: runTask,
   },
-  log: { summary: 'print the recent log lines', usage: '[--tail <n>]', implemented: false },
+  log: { summary: 'print the recent log lines', usage: '[--tail <n>] [--file <name>] [--list]', implemented: true, run: runLog },
 }
 
 /**
