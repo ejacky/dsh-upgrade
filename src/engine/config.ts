@@ -1,0 +1,191 @@
+/**
+ * Tool configuration: one JSON file, validated once, resolved to absolute paths.
+ *
+ * The file records deployment choices (where the slots live, which upstream to follow,
+ * ports, profile name) and policy (build mode, patch list, bundled opencode-session).
+ * Everything the engine does is derived from it, so a machine's layout is reproducible and
+ * a second machine only needs a different `root`.
+ *
+ * @module dsh-upgrade/engine/config
+ */
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+
+/** File name written by `init` and read by every command. */
+export const CONFIG_FILENAME = 'dsh-upgrade.json'
+
+/** Where the bundled `x-opencode-session` support comes from. */
+export type OpencodeSessionSource = 'builtin' | 'npm' | 'off'
+
+/** Bundled `x-opencode-session` policy. */
+export interface OpencodeSessionConfig {
+  /** `false` behaves like a stock DSH build. */
+  readonly enabled: boolean
+  /** `builtin` uses the vendored plugin; `npm` uses the published package. */
+  readonly source: OpencodeSessionSource
+  /** Header name the gateway expects. */
+  readonly header: string
+  /** URL substrings that identify the gateway; matched case-insensitively. */
+  readonly urlMarkers: readonly string[]
+}
+
+/** Validated tool configuration with absolute paths. */
+export interface Config {
+  /** Metadata revision of this file. */
+  readonly schema: 1
+  /** Parent directory that holds the slots and the stable path. */
+  readonly root: string
+  /** Stable path: a junction to whichever slot is serving. */
+  readonly stablePath: string
+  /** Directory holding the slot checkouts. */
+  readonly slotsRoot: string
+  /** Git URL to follow. */
+  readonly upstream: string
+  /** Tag glob, e.g. `dsh-v*`. */
+  readonly tagPattern: string
+  /** Port the serving web app listens on. */
+  readonly webPort: number
+  /** Port used to smoke-test a staged version. */
+  readonly smokePort: number
+  /** DSH profile the plugin install targets. */
+  readonly profile: string
+  /** `true` when this machine only builds from an administrator console. */
+  readonly manualBuild: boolean
+  /** Gate parallelism for `pnpm run build`; 1 serialises the build. */
+  readonly buildGateConcurrency: number
+  /** Bundled opencode-session policy. */
+  readonly opencodeSession: OpencodeSessionConfig
+  /** Source patches applied to every staged slot, relative to the tool root. */
+  readonly patchFiles: readonly string[]
+}
+
+/** The subset a caller may omit; defaults fill the rest. */
+export type ConfigInput = Partial<Omit<Config, 'schema'>> & { readonly root: string }
+
+const PORT = (value: unknown, field: string): number => {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error(`config: "${field}" must be an integer port`)
+  }
+  return value
+}
+
+const STRING = (value: unknown, field: string): string => {
+  if (typeof value !== 'string' || value.trim() === '') throw new Error(`config: "${field}" must be a non-empty string`)
+  return value
+}
+
+/**
+ * Build a complete configuration from a partial one.
+ * @param input - at minimum `root`; omitted keys take defaults.
+ * @returns the configuration with absolute paths.
+ */
+export function defaultConfig(input: ConfigInput): Config {
+  const root = resolve(input.root)
+  const session = input.opencodeSession
+  return {
+    schema: 1,
+    root,
+    stablePath: resolve(input.stablePath ?? join(root, 'deepseek-harness')),
+    slotsRoot: resolve(input.slotsRoot ?? join(root, 'dsh-slots')),
+    upstream: input.upstream ?? 'https://github.com/deepseek-ai/deepseek-harness.git',
+    tagPattern: input.tagPattern ?? 'dsh-v*',
+    webPort: input.webPort ?? 3080,
+    smokePort: input.smokePort ?? 3099,
+    profile: input.profile ?? 'web',
+    manualBuild: input.manualBuild ?? false,
+    buildGateConcurrency: input.buildGateConcurrency ?? 1,
+    opencodeSession: {
+      enabled: session?.enabled ?? true,
+      source: session?.source ?? 'builtin',
+      header: session?.header ?? 'x-opencode-session',
+      urlMarkers: session?.urlMarkers ?? ['opencode.ai'],
+    },
+    patchFiles: input.patchFiles ?? [],
+  }
+}
+
+/**
+ * Validate a parsed JSON object into a {@link Config}.
+ * @param raw - parsed JSON.
+ * @param baseDir - directory relative paths resolve against.
+ */
+export function parseConfig(raw: unknown, baseDir: string): Config {
+  if (typeof raw !== 'object' || raw === null) throw new Error('config: expected a JSON object')
+  const record = raw as Record<string, unknown>
+  const root = resolve(baseDir, STRING(record['root'], 'root'))
+  const absolute = (value: unknown, field: string, fallback: string): string => {
+    if (value === undefined) return fallback
+    const text = STRING(value, field)
+    return isAbsolute(text) ? text : resolve(baseDir, text)
+  }
+  const sessionRaw = record['opencodeSession']
+  const session = typeof sessionRaw === 'object' && sessionRaw !== null ? sessionRaw as Record<string, unknown> : {}
+  const source = session['source']
+  if (source !== undefined && source !== 'builtin' && source !== 'npm' && source !== 'off') {
+    throw new Error('config: "opencodeSession.source" must be builtin, npm, or off')
+  }
+  const markers = session['urlMarkers']
+  if (markers !== undefined && (!Array.isArray(markers) || markers.some(marker => typeof marker !== 'string'))) {
+    throw new Error('config: "opencodeSession.urlMarkers" must be an array of strings')
+  }
+  const patches = record['patchFiles']
+  if (patches !== undefined && (!Array.isArray(patches) || patches.some(patch => typeof patch !== 'string'))) {
+    throw new Error('config: "patchFiles" must be an array of strings')
+  }
+  const schema = record['schema']
+  if (schema !== undefined && schema !== 1) throw new Error('config: unsupported "schema" (expected 1)')
+  return defaultConfig({
+    root,
+    stablePath: absolute(record['stablePath'], 'stablePath', join(root, 'deepseek-harness')),
+    slotsRoot: absolute(record['slotsRoot'], 'slotsRoot', join(root, 'dsh-slots')),
+    ...record['upstream'] === undefined ? {} : { upstream: STRING(record['upstream'], 'upstream') },
+    ...record['tagPattern'] === undefined ? {} : { tagPattern: STRING(record['tagPattern'], 'tagPattern') },
+    webPort: record['webPort'] === undefined ? 3080 : PORT(record['webPort'], 'webPort'),
+    smokePort: record['smokePort'] === undefined ? 3099 : PORT(record['smokePort'], 'smokePort'),
+    ...record['profile'] === undefined ? {} : { profile: STRING(record['profile'], 'profile') },
+    manualBuild: record['manualBuild'] === true,
+    buildGateConcurrency: record['buildGateConcurrency'] === undefined
+      ? 1
+      : PORT(record['buildGateConcurrency'], 'buildGateConcurrency'),
+    opencodeSession: {
+      enabled: session['enabled'] !== false,
+      source: source ?? 'builtin',
+      header: session['header'] === undefined ? 'x-opencode-session' : STRING(session['header'], 'opencodeSession.header'),
+      urlMarkers: (markers as string[] | undefined) ?? ['opencode.ai'],
+    },
+    patchFiles: (patches as string[] | undefined) ?? [],
+  })
+}
+
+/**
+ * Resolve which configuration file an invocation uses.
+ * @param explicit - `--config` value when given.
+ * @param cwd - current working directory.
+ * @param toolRoot - the tool's own directory, used as the last resort.
+ * @returns the absolute path to read or write.
+ */
+export function resolveConfigPath(explicit: string | undefined, cwd: string, toolRoot: string): string {
+  if (explicit !== undefined) return resolve(cwd, explicit)
+  const fromEnv = process.env['DSH_UPGRADE_CONFIG']
+  if (fromEnv !== undefined && fromEnv !== '') return resolve(cwd, fromEnv)
+  const local = join(cwd, CONFIG_FILENAME)
+  return existsSync(local) ? local : join(toolRoot, CONFIG_FILENAME)
+}
+
+/**
+ * Read and validate a configuration file.
+ * @param path - absolute path to the JSON file.
+ */
+export function loadConfig(path: string): Config {
+  if (!existsSync(path)) throw new Error(`config not found: ${path} (run "dsh-upgrade init")`)
+  return parseConfig(JSON.parse(readFileSync(path, 'utf8')), dirname(path))
+}
+
+/**
+ * Write a configuration file, creating its directory when needed.
+ * @param path - absolute path to the JSON file.
+ * @param config - the configuration to persist.
+ */
+export function saveConfig(path: string, config: Config): void {
+  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+}

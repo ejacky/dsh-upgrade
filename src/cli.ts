@@ -14,7 +14,11 @@
  *
  * @module dsh-upgrade/cli
  */
+import { join } from 'node:path'
 import { readToolVersion } from './version.ts'
+import { runCheck } from './commands/check.ts'
+import { runInit } from './commands/init.ts'
+import { runStatus } from './commands/status.ts'
 
 /** Documented exit codes. Scripts and the tray app branch on these. */
 const EXIT = {
@@ -46,6 +50,12 @@ interface CommandSpec {
 export interface RunOptions {
   /** `--json`: emit machine-readable output where the command supports it. */
   readonly json: boolean
+  /** Directory the invocation ran from; relative paths resolve against it. */
+  readonly cwd: string
+  /** The tool's own install directory, the last resort for locating its config. */
+  readonly toolRoot: string
+  /** `--config <path>` when given; commands resolve their own default otherwise. */
+  readonly configPath?: string
 }
 
 const COMMANDS: Readonly<Record<string, CommandSpec>> = {
@@ -56,11 +66,12 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   init: {
     summary: 'create the dual-slot layout, the stable-path link, and the config file',
-    usage: '[--root <dir>] [--upstream <url>] [--tag <tag>]',
-    implemented: false,
+    usage: '[--root <dir>] [--upstream <url>] [--force]',
+    implemented: true,
+    run: runInit,
   },
-  status: { summary: 'report versions, slots, staged version, and the last error', implemented: false },
-  check: { summary: 'fetch upstream tags and report whether a newer version exists', implemented: false },
+  status: { summary: 'report versions, slots, staged version, and the last error', implemented: true, run: runStatus },
+  check: { summary: 'fetch upstream tags and report whether a newer version exists', usage: '[--no-fetch]', implemented: true, run: runCheck },
   stage: { summary: 'prepare the spare slot and smoke-test it, without touching the serving slot', implemented: false },
   apply: { summary: 'switch to the staged version; rolls back automatically when startup fails', implemented: false },
   rollback: { summary: 'switch back to the previous version', implemented: false },
@@ -120,7 +131,7 @@ function printHelp(stream: NodeJS.WriteStream, root: string): void {
  * @param options - parsed global options.
  * @returns {@link EXIT.ok}.
  */
-function printVersion(options: RunOptions): number {
+function printVersion(options: Pick<RunOptions, 'json'>): number {
   const info = readToolVersion(import.meta.dirname)
   if (options.json) {
     process.stdout.write(`${JSON.stringify({ name: info.name, version: info.version, schema: info.schema, builtAt: info.builtAt })}\n`)
@@ -135,6 +146,7 @@ interface GlobalFlags {
   readonly json: boolean
   readonly help: boolean
   readonly version: boolean
+  readonly configPath?: string
   readonly rest: readonly string[]
 }
 
@@ -147,6 +159,7 @@ function parseGlobal(argv: readonly string[]): GlobalFlags {
   let json = false
   let help = false
   let version = false
+  let configPath: string | undefined
   const rest: string[] = []
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
@@ -158,9 +171,16 @@ function parseGlobal(argv: readonly string[]): GlobalFlags {
     if (argument === '--json') { json = true; continue }
     if (argument === '-h' || argument === '--help') { help = true; continue }
     if (argument === '-V' || argument === '--version') { version = true; continue }
+    if (argument === '--config') {
+      const value = argv[index + 1]
+      if (value === undefined || value === '') throw new Error('--config needs a path')
+      configPath = value
+      index += 1
+      continue
+    }
     rest.push(argument)
   }
-  return { json, help, version, rest }
+  return { json, help, version, rest, ...configPath === undefined ? {} : { configPath } }
 }
 
 /**
@@ -196,7 +216,12 @@ export function main(argv: readonly string[]): number {
     process.stderr.write(`dsh-upgrade: command "${name}" is not implemented yet\n`)
     return EXIT.unimplemented
   }
-  return spec.run(args, { json: flags.json })
+  return spec.run(args, {
+    json: flags.json,
+    cwd: process.cwd(),
+    toolRoot: join(import.meta.dirname, '..'),
+    ...flags.configPath === undefined ? {} : { configPath: flags.configPath },
+  })
 }
 
 /**
@@ -210,3 +235,5 @@ function usageError(message: string): number {
 }
 
 if (import.meta.main) process.exit(main(process.argv.slice(2)))
+
+

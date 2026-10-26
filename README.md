@@ -2,9 +2,10 @@
 
 Zero-downtime upgrades for a **DeepSeek Harness source checkout** on Windows.
 
-> **Status: M0 (skeleton).** The command surface, exit codes, `--help`, and `--version` are
-> in place; every other command is listed by `--help` and exits with `5` (not implemented)
-> until its milestone lands.
+> **Status: M1.** Implemented: `version`, `init`, `status`, `check` (configuration, state,
+> strict semver ordering, real tag fetching, junction-aware slot resolution). Remaining v1
+> commands are listed by `--help` and exit with `5` (not implemented) until their milestone
+> lands.
 
 ## Who this is for
 
@@ -85,3 +86,4 @@ behind them.
 ## License
 
 MIT — see `LICENSE`.
+
