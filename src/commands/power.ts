@@ -161,7 +161,7 @@ export async function runToggle(args: readonly string[], options: RunOptions): P
 }
 
 /**
- * The two desktop launchers, as hidden wrappers plus shortcuts.
+ * The desktop launchers, as hidden wrappers plus shortcuts.
  * @param args - `--install` or `--remove`.
  * @param options - global options.
  * @returns the exit code.
@@ -177,32 +177,34 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
   if (context === undefined) return 4
   const { config } = context
   const bin = join(config.root, 'bin')
-  const names = ['dsh-upgrade-start', 'dsh-upgrade-update']
+  // The third element decides whether the wrapper waits: the tray outlives its launcher.
+  const wrappers: readonly (readonly [string, string, boolean])[] = [
+    ['dsh-upgrade-start', 'toggle --yes', true],
+    ['dsh-upgrade-update', 'apply --wait', true],
+    ['dsh-upgrade-tray', 'tray', false],
+  ]
   mkdirSync(bin, { recursive: true })
   const desktopProbe = spawnSync('pwsh', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"], { encoding: 'utf8' })
   const desktop = (desktopProbe.stdout ?? '').trim() !== '' ? (desktopProbe.stdout ?? '').trim() : join(process.env['USERPROFILE'] ?? '', 'Desktop')
 
   if (remove) {
-    for (const name of names) {
+    for (const [name] of wrappers) {
       rmSync(join(bin, `${name}.cmd`), { force: true })
       rmSync(join(bin, `${name}.vbs`), { force: true })
       rmSync(join(desktop, `${name}.lnk`), { force: true })
     }
+    rmSync(join(bin, 'create-shortcuts.ps1'), { force: true })
     process.stdout.write('removed launchers\n')
     return 0
   }
 
   const cli = import.meta.filename
   const node = process.execPath
-  const wrappers: readonly (readonly [string, string])[] = [
-    ['dsh-upgrade-start', 'toggle --yes'],
-    ['dsh-upgrade-update', 'apply --wait'],
-  ]
   const script = [
     '$ErrorActionPreference = "Stop"',
     '$shell = New-Object -ComObject WScript.Shell',
   ]
-  for (const [name, command] of wrappers) {
+  for (const [name, command, wait] of wrappers) {
     const cmd = join(bin, `${name}.cmd`)
     writeFileSync(cmd, `@echo off\r\n"${node}" "${cli}" ${command}\r\n`, 'ascii')
     const vbs = join(bin, `${name}.vbs`)
@@ -212,7 +214,7 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
       "' Runs the launcher with no console window.",
       'Set sh = CreateObject("WScript.Shell")',
       `sh.CurrentDirectory = "${bin}"`,
-      `sh.Run """${node}"" ""${cli}"" ${command}", 0, True`,
+      `sh.Run """${node}"" ""${cli}"" ${command}", 0, ${wait ? 'True' : 'False'}`,
       '',
     ].join('\r\n')}`, 'utf16le')
     const link = join(desktop, `${name}.lnk`)

@@ -12,7 +12,7 @@
  *
  * @module dsh-upgrade/commands/patch
  */
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { RunOptions } from '../cli.ts'
 import { loadConfig, resolveConfigPath, type Config } from '../engine/config.ts'
@@ -167,14 +167,14 @@ function rowsOf(config: Config, loaded: LoadedManifest, toolRoot: string): Row[]
   const rows: Row[] = loaded.manifest.patches.map(entry => ({
     name: entry.name,
     file: entry.file,
-    active: config.patchFiles.some(entryFile => samePatchFile(entryFile, entry.file)),
+    active: config.patchFiles.some(entryFile => samePatchEntry(entryFile, entry.file, toolRoot, toolRoot)),
     exists: existsSync(resolvePatchFile(entry.file, toolRoot)),
     summary: entry.summary,
     verifiedTags: entry.verifiedTags,
     ...entry.obsoleteSince === undefined ? {} : { obsoleteSince: entry.obsoleteSince },
   }))
   for (const entryFile of config.patchFiles) {
-    if (loaded.manifest.patches.some(entry => samePatchFile(entry.file, entryFile))) continue
+    if (loaded.manifest.patches.some(entry => samePatchEntry(entry.file, entryFile, toolRoot, toolRoot))) continue
     rows.push({
       file: normalizePatchFile(entryFile),
       active: true,
@@ -192,8 +192,12 @@ function rowsOf(config: Config, loaded: LoadedManifest, toolRoot: string): Row[]
 function notesOf(row: Row): string[] {
   const notes: string[] = []
   if (!row.exists) notes.push('the patch file does not exist; staging will fail')
-  if (row.obsoleteSince !== undefined) notes.push(`upstream no longer needs it since ${row.obsoleteSince}`)
-  if (!row.active && row.exists) notes.push(`not applied; enable with "dsh-upgrade patch add ${row.name ?? row.file}"`)
+  if (row.obsoleteSince !== undefined) {
+    notes.push(`upstream no longer needs it since ${row.obsoleteSince}`)
+    if (row.active) notes.push(`remove it with "dsh-upgrade patch remove ${row.name ?? row.file}"`)
+  } else if (!row.active && row.exists) {
+    notes.push(`not applied; enable with "dsh-upgrade patch add ${row.name ?? row.file}"`)
+  }
   return notes
 }
 
@@ -202,31 +206,48 @@ function notesOf(row: Row): string[] {
  *
  * Rewriting the parsed configuration would drop fields this build does not know and would
  * turn relative paths absolute; editing the raw object keeps the operator's file intact.
+ * The replacement goes through a temporary file so an interrupted write cannot leave a
+ * truncated configuration behind.
  * @param configPath - the configuration file.
  * @param mutate - receives the current list and returns the next one.
  * @returns the list that was written.
+ * @throws when the file cannot be read or replaced.
  */
 function writePatchFiles(configPath: string, mutate: (current: readonly string[]) => readonly string[]): readonly string[] {
   const raw = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>
   const current = Array.isArray(raw['patchFiles']) ? (raw['patchFiles'] as string[]) : []
   const next = [...mutate(current)]
   raw['patchFiles'] = next
-  writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8')
+  const temporary = `${configPath}.tmp`
+  writeFileSync(temporary, `${JSON.stringify(raw, null, 2)}\n`, 'utf8')
+  renameSync(temporary, configPath)
   return next
 }
 
 /**
- * Whether a configured entry names the patch a query names.
- * @param entry - one configured entry.
- * @param query - a path the operator typed.
+ * Canonical identity of a patch file: the real path when it exists, so `.` segments, short
+ * (8.3) names, and letter case cannot make one file look like two.
+ * @param file - absolute patch path.
+ */
+function canonicalPath(file: string): string {
+  try {
+    return realpathSync.native(file).toLowerCase()
+  } catch {
+    return resolve(file).toLowerCase()
+  }
+}
+
+/**
+ * Whether a stored patch entry names the file a query names.
+ * @param entry - one configured entry, or a catalog `file`.
+ * @param query - a path or stored entry to compare with.
  * @param toolRoot - the tool's own directory.
  * @param cwd - the directory the operator ran in.
  */
 function samePatchEntry(entry: string, query: string, toolRoot: string, cwd: string): boolean {
   if (samePatchFile(entry, query)) return true
-  const entryAbsolute = resolvePatchFile(entry, toolRoot)
   const queryAbsolute = isAbsolute(query) ? query : resolve(cwd, query)
-  return samePatchFile(entryAbsolute, queryAbsolute)
+  return canonicalPath(resolvePatchFile(entry, toolRoot)) === canonicalPath(queryAbsolute)
 }
 
 /**
@@ -282,7 +303,7 @@ function runList(config: Config, loaded: LoadedManifest, toolRoot: string, optio
   }
   process.stdout.write('dsh-upgrade patch list\n')
   process.stdout.write(`  catalog   ${loaded.present ? loaded.path : `${loaded.path} (missing)`}\n`)
-  process.stdout.write(`  applied   ${active} of ${rows.length}\n`)
+  process.stdout.write(`  active    ${active} of ${rows.length}\n`)
   if (rows.length === 0) {
     process.stdout.write('  no patches are configured or catalogued; staging applies nothing extra\n')
     return EXIT.ok
@@ -314,7 +335,7 @@ function runVerify(
   }
   if (flags.all) {
     for (const entry of loaded.manifest.patches) {
-      if (candidates.some(candidate => samePatchFile(candidate.file, entry.file))) continue
+      if (candidates.some(candidate => samePatchEntry(candidate.file, entry.file, options.toolRoot, options.toolRoot))) continue
       candidates.push({ name: entry.name, file: entry.file, active: false })
     }
   }
@@ -324,7 +345,9 @@ function runVerify(
     const check = checkPatch(absolute, tree.directory)
     return { ...candidate, absolute, state: check.state, detail: check.detail }
   })
-  const failing = checks.filter(check => check.state === 'conflict' || check.state === 'missing')
+  // Only a configured patch can make a stage fail; a catalogued patch that is not applied is
+  // reported, not counted against the version being verified.
+  const failing = checks.filter(check => check.active && (check.state === 'conflict' || check.state === 'missing'))
 
   if (options.json) {
     process.stdout.write(`${JSON.stringify({
@@ -385,6 +408,22 @@ function resolveQuery(query: string, loaded: LoadedManifest, options: RunOptions
 }
 
 /**
+ * Report a failure on the channel the caller reads.
+ * @param where - the subcommand that failed.
+ * @param message - what went wrong.
+ * @param code - exit code.
+ * @param json - whether `--json` output was requested.
+ */
+function reportFailure(where: string, message: string, code: number, json: boolean): number {
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ ok: false, error: message, nextAction: code === EXIT.manual ? 'human' : 'retry' })}\n`)
+  } else {
+    process.stderr.write(where === '' ? `dsh-upgrade patch: ${message}\n` : `dsh-upgrade patch ${where}: ${message}\n`)
+  }
+  return code
+}
+
+/**
  * Run `patch add` or `patch remove`.
  * @param config - resolved tool configuration.
  * @param configPath - the configuration file to edit.
@@ -404,27 +443,23 @@ function runEdit(
   let target: string
   if (flags.file !== undefined) {
     target = isAbsolute(flags.file) ? flags.file : resolve(options.cwd, flags.file)
+    // A path the operator typed that is not there is a usage error; a catalog entry whose
+    // file is missing means the installation is incomplete, which is a probe failure.
     if (adding && (!existsSync(target) || !statSync(target).isFile())) {
-      process.stderr.write(`dsh-upgrade patch add: no patch file at ${target}\n`)
-      return EXIT.usage
+      return reportFailure(flags.verb, `no patch file at ${target}`, EXIT.usage, options.json)
     }
   } else {
     const resolved = resolveQuery(flags.name ?? '', loaded, options)
-    if (Array.isArray(resolved)) {
-      process.stderr.write(`dsh-upgrade patch ${flags.verb}: ${resolved[0]}\n`)
-      return EXIT.usage
-    }
+    if (Array.isArray(resolved)) return reportFailure(flags.verb, resolved[0] ?? 'no such patch', EXIT.usage, options.json)
     target = resolved
   }
 
   if (adding) {
     if (!existsSync(target)) {
-      process.stderr.write(`dsh-upgrade patch add: the catalog names ${target}, which does not exist\n`)
-      return EXIT.probe
+      return reportFailure(flags.verb, `the catalog names ${target}, which is missing; reinstall the tool or pass --file`, EXIT.probe, options.json)
     }
     if (!looksLikePatch(target)) {
-      process.stderr.write(`dsh-upgrade patch add: ${target} does not look like a git patch (no diff header)\n`)
-      return EXIT.usage
+      return reportFailure(flags.verb, `${target} does not look like a git patch (no diff header)`, EXIT.usage, options.json)
     }
   }
 
@@ -433,13 +468,19 @@ function runEdit(
     samePatchEntry(entryFile, target, options.toolRoot, options.cwd))
 
   if (adding && present) {
-    if (options.json) process.stdout.write(`${JSON.stringify({ ok: true, file: stored, alreadyActive: true })}\n`)
-    else process.stdout.write(`patch ${stored} is already applied; nothing to do\n`)
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify({ ok: true, file: stored, alreadyActive: true, patchFiles: config.patchFiles })}\n`)
+    } else {
+      process.stdout.write(`patch ${stored} is already applied; nothing to do\n`)
+    }
     return EXIT.ok
   }
   if (!adding && !present) {
-    if (options.json) process.stdout.write(`${JSON.stringify({ ok: true, file: stored, wasActive: false })}\n`)
-    else process.stdout.write(`patch ${stored} is not applied; nothing to do\n`)
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify({ ok: true, file: stored, wasActive: false, patchFiles: config.patchFiles })}\n`)
+    } else {
+      process.stdout.write(`patch ${stored} is not applied; nothing to do\n`)
+    }
     return EXIT.ok
   }
 
@@ -448,7 +489,7 @@ function runEdit(
     : current.filter(entryFile => !samePatchEntry(entryFile, target, options.toolRoot, options.cwd)))
 
   if (options.json) {
-    process.stdout.write(`${JSON.stringify({ ok: true, file: stored, patchFiles: next, nextAction: 'stage' })}\n`)
+    process.stdout.write(`${JSON.stringify({ ok: true, file: stored, patchFiles: next, nextAction: adding ? 'verify' : 'stage' })}\n`)
     return EXIT.ok
   }
   process.stdout.write(`${adding ? 'added' : 'removed'} patch ${stored}\n`)
@@ -468,6 +509,9 @@ function looksLikePatch(file: string): boolean {
 
 /**
  * Run `patch`.
+ *
+ * Every failure inside the command is reported with one of the documented exit codes; a raw
+ * stack trace would tell the tray and the scheduled task nothing they can branch on.
  * @param args - arguments after the command name.
  * @param options - global options.
  * @returns the process exit code.
@@ -481,36 +525,31 @@ export function runPatch(args: readonly string[], options: RunOptions): number {
     return EXIT.usage
   }
 
-  const configPath = resolveConfigPath(options.configPath, options.cwd, options.toolRoot)
-  if (!existsSync(configPath)) {
-    process.stderr.write(`dsh-upgrade patch: ${configPath} not found (run "dsh-upgrade init")\n`)
-    return EXIT.probe
-  }
-  const config = loadConfig(configPath)
-
-  const manifestPath = flags.manifest === undefined
-    ? defaultManifestPath(options.toolRoot)
-    : resolve(options.cwd, flags.manifest)
-  let loaded: LoadedManifest
   try {
-    loaded = loadManifest(manifestPath)
-  } catch (error) {
-    process.stderr.write(`dsh-upgrade patch: ${(error as Error).message}\n`)
-    return EXIT.probe
-  }
+    const configPath = resolveConfigPath(options.configPath, options.cwd, options.toolRoot)
+    if (!existsSync(configPath)) {
+      return reportFailure('', `${configPath} not found (run "dsh-upgrade init")`, EXIT.probe, options.json)
+    }
+    const config = loadConfig(configPath)
 
-  if (flags.verb === 'list') return runList(config, loaded, options.toolRoot, options)
-  if (flags.verb === 'verify') {
-    const tree = treeOf(config, flags.slot)
-    if (tree === 'no-slot') {
-      process.stderr.write(`dsh-upgrade patch verify: no slot checkout under ${config.slotsRoot} (run "dsh-upgrade stage")\n`)
-      return EXIT.probe
+    const manifestPath = flags.manifest === undefined
+      ? defaultManifestPath(options.toolRoot)
+      : resolve(options.cwd, flags.manifest)
+    const loaded = loadManifest(manifestPath)
+
+    if (flags.verb === 'list') return runList(config, loaded, options.toolRoot, options)
+    if (flags.verb === 'verify') {
+      const tree = treeOf(config, flags.slot)
+      if (tree === 'no-slot') {
+        return reportFailure(flags.verb, `no slot checkout under ${config.slotsRoot} (run "dsh-upgrade stage")`, EXIT.probe, options.json)
+      }
+      if (tree === 'missing') {
+        return reportFailure(flags.verb, `slot ${flags.slot ?? '?'} has no checkout`, EXIT.probe, options.json)
+      }
+      return runVerify(config, loaded, tree, flags, options)
     }
-    if (tree === 'missing') {
-      process.stderr.write(`dsh-upgrade patch verify: slot ${flags.slot ?? '?'} has no checkout\n`)
-      return EXIT.probe
-    }
-    return runVerify(config, loaded, tree, flags, options)
+    return runEdit(config, configPath, loaded, flags, options)
+  } catch (error) {
+    return reportFailure(flags.verb, (error as Error).message, EXIT.probe, options.json)
   }
-  return runEdit(config, configPath, loaded, flags, options)
 }

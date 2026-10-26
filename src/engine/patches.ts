@@ -6,9 +6,9 @@
  * partially applied patch set would ship a tree nobody tested.
  *
  * Every check runs in both directions. A patch whose reverse application succeeds is
- * already in the tree — the upstream release absorbed it — so staging skips it instead of
- * failing. That makes a patch list survive the release that makes a patch obsolete, and lets
- * `patch verify` distinguish "already applied" from "does not apply".
+ * already in the tree — typically because the release contains the fix — so staging skips it
+ * instead of failing. That makes a patch list survive the release that makes a patch
+ * obsolete, and lets `patch verify` distinguish "already applied" from "does not apply".
  * @module dsh-upgrade/engine/patches
  */
 import { existsSync } from 'node:fs'

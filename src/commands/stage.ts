@@ -7,16 +7,16 @@
  *
  * @module dsh-upgrade/commands/stage
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
-import { loadConfig, resolveConfigPath } from '../engine/config.ts'
-import { fetchTags, listTags, lsRemoteTags } from '../engine/git.ts'
+import { loadConfig, resolveConfigPath, type Config } from '../engine/config.ts'
+import { fetchTags, listTags, lsRemoteTags, tagsAtHead } from '../engine/git.ts'
 import { acquireLock } from '../engine/lock.ts'
 import { applyPatches } from '../engine/patches.ts'
 import { build, install } from '../engine/pnpm.ts'
 import { newestTag } from '../engine/semver.ts'
 import { smoke } from '../engine/smoke.ts'
-import { activeSlot, slotExists, slotPath, spareSlot } from '../engine/slots.ts'
+import { activeSlot, slotExists, slotPath, spareSlot, type SlotName } from '../engine/slots.ts'
 import { readState, statePathOf, writeState, type SlotRecord } from '../engine/state.ts'
 import { ensureCheckout, isPrepared } from '../engine/worktree.ts'
 import type { RunOptions } from '../cli.ts'
@@ -28,6 +28,8 @@ interface StageFlags {
   readonly skipInstall: boolean
   readonly force: boolean
   readonly fetch: boolean
+  /** Finish a slot whose build ran in an administrator console. */
+  readonly resume: boolean
 }
 
 /**
@@ -40,12 +42,14 @@ function parseFlags(args: readonly string[]): StageFlags {
   let skipInstall = false
   let force = false
   let fetch = true
+  let resume = false
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]
     if (argument === '--skip-build') { skipBuild = true; continue }
     if (argument === '--skip-install') { skipInstall = true; continue }
     if (argument === '--force') { force = true; continue }
     if (argument === '--no-fetch') { fetch = false; continue }
+    if (argument === '--resume') { resume = true; continue }
     if (argument === '--tag') {
       const value = args[index + 1]
       if (value === undefined) throw new Error('--tag needs a value')
@@ -55,7 +59,7 @@ function parseFlags(args: readonly string[]): StageFlags {
     }
     throw new Error(`unknown argument "${argument}"`)
   }
-  return { ...tag === undefined ? {} : { tag }, skipBuild, skipInstall, force, fetch }
+  return { ...tag === undefined ? {} : { tag }, skipBuild, skipInstall, force, fetch, resume }
 }
 
 /** Client metadata read from a slot's build record. */
@@ -86,6 +90,80 @@ function clientRecordOf(slotDirectory: string): ClientRecord {
   } catch {
     return {}
   }
+}
+
+/** File the manual-build path leaves behind for `stage --resume`. */
+export const BUILD_REQUEST_FILENAME = 'build-request.json'
+
+/** What `stage` asked an administrator console to build. */
+interface BuildRequest {
+  readonly tag: string
+  readonly slot: SlotName
+}
+
+/**
+ * Read the pending build request.
+ * @param config - resolved tool configuration.
+ * @returns the request, or `undefined` when none is pending or the file is unusable.
+ */
+function readBuildRequest(config: Config): BuildRequest | undefined {
+  const path = join(config.root, 'state', BUILD_REQUEST_FILENAME)
+  if (!existsSync(path)) return undefined
+  const raw = JSON.parse(readFileSync(path, 'utf8')) as { tag?: unknown, slot?: unknown }
+  if (typeof raw.tag !== 'string' || (raw.slot !== 'a' && raw.slot !== 'b')) return undefined
+  return { tag: raw.tag, slot: raw.slot }
+}
+
+/**
+ * Finish a slot whose build ran in an administrator console.
+ *
+ * The manual-build machine refuses a child process the build, so `stage` stops after install
+ * and writes {@link BUILD_REQUEST_FILENAME}. The console builds the requested slot, and this
+ * completes the same sequence the automatic path takes: confirm the tree is still the
+ * requested version, smoke-test the artifacts that were built, and record the slot as staged.
+ *
+ * @param config - resolved tool configuration.
+ * @param statePath - upgrade state file.
+ * @param options - global options.
+ * @returns the process exit code.
+ */
+async function resumeBuild(config: Config, statePath: string, options: RunOptions): Promise<number> {
+  const fail = (code: number, message: string): number => {
+    writeState(statePath, { ...readState(statePath), lastError: message })
+    if (options.json) process.stdout.write(`${JSON.stringify({ ok: false, error: message, nextAction: code === 3 ? 'human' : 'retry' })}\n`)
+    else process.stderr.write(`dsh-upgrade stage: ${message}\n`)
+    return code
+  }
+  const request = readBuildRequest(config)
+  if (request === undefined) return fail(3, 'no build request; run "dsh-upgrade stage" first')
+  if (activeSlot(config) === request.slot) return fail(3, `slot ${request.slot} is serving; refusing to finish a build there`)
+  if (!slotExists(config, request.slot)) return fail(3, `slot ${request.slot} has no checkout; run "dsh-upgrade stage"`)
+  const directory = slotPath(config, request.slot)
+  const at = tagsAtHead(directory)
+  if (!at.includes(request.tag)) {
+    return fail(3, `slot ${request.slot} is at ${at.join(', ') || 'an untagged commit'}, not ${request.tag}; run "dsh-upgrade stage" again`)
+  }
+  if (!existsSync(join(directory, '.dsh-build', 'client-build-environment.json'))) {
+    return fail(3, 'the build has not finished: no .dsh-build record; run the build in an administrator console')
+  }
+  const progress = (line: string): void => { if (!options.json) process.stderr.write(`${line}\n`) }
+  progress(`smoke testing the built ${request.tag} in slot ${request.slot}`)
+  const smoked = await smoke(config, directory, join(config.root, 'logs', `smoke-${request.tag}.log`), progress)
+  if (!smoked.ok) return fail(4, `smoke failed: ${smoked.error ?? 'unknown'}`)
+  const record: SlotRecord = {
+    tag: request.tag,
+    slot: request.slot,
+    at: new Date().toISOString(),
+    ...clientRecordOf(directory),
+  }
+  writeState(statePath, { ...readState(statePath), staged: record, lastError: null })
+  rmSync(join(config.root, 'state', BUILD_REQUEST_FILENAME), { force: true })
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ ok: true, resumed: true, tag: record.tag, slot: record.slot, smoke: true, nextAction: 'apply' })}\n`)
+  } else {
+    process.stdout.write(`staged ${request.tag} in slot ${request.slot} (built in an administrator console, smoke passed)\nNext: dsh-upgrade apply\n`)
+  }
+  return 0
 }
 
 /**
@@ -124,6 +202,7 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
   if (lock === undefined) return fail(3, 'another layout action is running (state/layout.lock is held)')
 
   try {
+    if (flags.resume) return await resumeBuild(config, statePath, options)
     const active = activeSlot(config)
     const slot = spareSlot(config)
     const directory = slotPath(config, slot)
@@ -147,7 +226,9 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
     const target = flags.tag ?? newestTag(tags, config.tagPattern)?.tag
     if (target === undefined) return fail(4, `no tag matching ${config.tagPattern} in ${config.slotsRoot}`)
 
-    if (!flags.force && isPrepared(config, slot, target)) {
+    // Reuse a slot only when nothing would have to change in it. A patch list can grow after
+    // a slot was prepared, and the prepared tree would not carry the new patch.
+    if (!flags.force && config.patchFiles.length === 0 && isPrepared(config, slot, target)) {
       progress(`slot ${slot} is already prepared at ${target}`)
       state = { ...state, staged: { tag: target, slot, at: new Date().toISOString(), smoke: true, ...clientRecordOf(directory) } as SlotRecord, lastError: null }
       writeState(statePath, state)
@@ -171,7 +252,7 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
     if (!flags.skipBuild) {
       if (config.manualBuild) {
         mkdirSync(join(config.root, 'state'), { recursive: true })
-        writeFileSync(join(config.root, 'state', 'build-request.json'), `${JSON.stringify({ tag: target, slot, at: new Date().toISOString() }, null, 2)}\n`, 'utf8')
+        writeFileSync(join(config.root, 'state', BUILD_REQUEST_FILENAME), `${JSON.stringify({ tag: target, slot, at: new Date().toISOString() }, null, 2)}\n`, 'utf8')
         return fail(3, `this machine builds only from an administrator console; run the build there or set manualBuild=false`)
       }
       progress('building')

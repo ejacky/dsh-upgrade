@@ -73,13 +73,23 @@ export function lsRemoteTags(upstream: string, cwd: string): string[] {
 }
 
 /**
+ * Every tag that points at the checkout's HEAD.
+ *
+ * Several tags can name one commit (a re-tagged release, or a test fixture), so a caller
+ * asking "is this tree at X" must look at the whole list, not at the first tag.
+ * @param slotPath - the slot's directory.
+ */
+export function tagsAtHead(slotPath: string): string[] {
+  const result = git(['tag', '--points-at', 'HEAD'], slotPath)
+  if (!result.ok) return []
+  return result.stdout.split(/\r?\n/).map(line => line.trim()).filter(line => line !== '')
+}
+
+/**
  * The tag a checkout points at, if any.
  * @param slotPath - the slot's directory.
  */
 export function tagAtHead(slotPath: string): string | undefined {
-  const result = git(['tag', '--points-at', 'HEAD'], slotPath)
-  if (!result.ok) return undefined
-  const first = result.stdout.split(/\r?\n/).map(line => line.trim()).find(line => line !== '')
-  return first
+  return tagsAtHead(slotPath)[0]
 }
 

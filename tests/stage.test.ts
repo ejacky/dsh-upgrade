@@ -141,6 +141,52 @@ test('manualBuild stops before building and asks for a human', async () => {
   assert.equal(request.slot, 'a')
 })
 
+test('stage --resume finishes a build that ran in an administrator console', async () => {
+  const { root, fakePnpm } = await fixture(true)
+  const stopped = run(['stage', '--json'], root, { DSH_UPGRADE_PNPM_JS: fakePnpm })
+  assert.equal(stopped.status, 3)
+
+  // What the elevated console does: build the slot that the request names.
+  const slot = join(root, 'dsh-slots', 'a')
+  const built = spawnSync(process.execPath, [fakePnpm, 'run', 'build'], { cwd: slot, encoding: 'utf8' })
+  assert.equal(built.status, 0, built.stderr)
+
+  const resumed = run(['stage', '--resume', '--json'], root, { DSH_UPGRADE_PNPM_JS: fakePnpm })
+  assert.equal(resumed.status, 0, resumed.stderr)
+  const report = JSON.parse(resumed.stdout) as { ok: boolean, resumed: boolean, tag: string, slot: string, smoke: boolean }
+  assert.equal(report.ok, true)
+  assert.equal(report.resumed, true)
+  assert.equal(report.tag, 'dsh-v0.2.1-rc.3')
+  assert.equal(report.slot, 'a')
+  assert.equal(report.smoke, true)
+
+  const state = JSON.parse(readFileSync(join(root, 'state', 'upgrade-state.json'), 'utf8')) as { staged: { tag: string, clientVersion?: string }, lastError: unknown }
+  assert.equal(state.staged.tag, 'dsh-v0.2.1-rc.3')
+  assert.equal(state.staged.clientVersion, '0.0.0-fake')
+  assert.equal(state.lastError, null)
+  assert.equal(existsSync(join(root, 'state', 'build-request.json')), false)
+})
+
+test('stage --resume refuses a request whose build has not happened', async () => {
+  const { root, fakePnpm } = await fixture(true)
+  const stopped = run(['stage', '--json'], root, { DSH_UPGRADE_PNPM_JS: fakePnpm })
+  assert.equal(stopped.status, 3)
+
+  const resumed = run(['stage', '--resume', '--json'], root, { DSH_UPGRADE_PNPM_JS: fakePnpm })
+  assert.equal(resumed.status, 3)
+  const report = JSON.parse(resumed.stdout) as { ok: boolean, error: string }
+  assert.equal(report.ok, false)
+  assert.match(report.error, /the build has not finished/)
+})
+
+test('stage --resume without a request asks for a normal stage', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-upgrade-resume-'))
+  writeFileSync(join(root, 'dsh-upgrade.json'), `${JSON.stringify({ schema: 1, root }, null, 2)}\n`, 'utf8')
+  const resumed = run(['stage', '--resume', '--json'], root)
+  assert.equal(resumed.status, 3)
+  assert.match((JSON.parse(resumed.stdout) as { error: string }).error, /no build request/)
+})
+
 test('stage refuses to run without a configuration', () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-upgrade-nocfg-'))
   const result = run(['stage'], root)

@@ -24,6 +24,7 @@ import { runInit } from './commands/init.ts'
 import { runPatch } from './commands/patch.ts'
 import { runStage } from './commands/stage.ts'
 import { runStatus } from './commands/status.ts'
+import { runTray } from './commands/tray.ts'
 
 /** Documented exit codes. Scripts and the tray app branch on these. */
 const EXIT = {
@@ -79,7 +80,7 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   check: { summary: 'fetch upstream tags and report whether a newer version exists', usage: '[--no-fetch]', implemented: true, run: runCheck },
   stage: {
     summary: 'prepare the spare slot and smoke-test it, without touching the serving slot',
-    usage: '[--tag <tag>] [--skip-build] [--skip-install] [--force] [--no-fetch]',
+    usage: '[--tag <tag>] [--skip-build] [--skip-install] [--force] [--no-fetch] [--resume]',
     implemented: true,
     run: runStage,
   },
@@ -121,7 +122,7 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     implemented: true,
     run: runShortcuts,
   },
-  tray: { summary: 'run the tray companion', implemented: false },
+  tray: { summary: 'run the tray companion', usage: '[--dry-run]', implemented: true, run: runTray },
   task: { summary: 'install, remove, or report the scheduled check task', usage: '[install|remove|status]', implemented: false },
   log: { summary: 'print the recent log lines', usage: '[--tail <n>]', implemented: false },
 }

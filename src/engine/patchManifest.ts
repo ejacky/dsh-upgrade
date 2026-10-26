@@ -116,13 +116,26 @@ function textList(value: unknown, field: string): string[] {
   return value.map(item => (item as string).trim())
 }
 
+/** Fields a catalog entry may use. An unknown field is a typo, not forward compatibility. */
+const ENTRY_FIELDS: readonly string[] = ['name', 'file', 'summary', 'upstreamIssue', 'verifiedTags', 'obsoleteSince']
+
 /**
  * Validate a parsed JSON object into a {@link PatchManifest}.
+ *
+ * Unknown fields and unknown top-level keys are rejected: the catalog ships with the tool, so
+ * a misspelled `verifiedTags` would silently drop the only record of what the patch was
+ * tested against.
+ *
  * @param raw - parsed JSON.
  */
 export function parseManifest(raw: unknown): PatchManifest {
   if (typeof raw !== 'object' || raw === null) throw new Error('patch manifest: expected a JSON object')
   const record = raw as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (key !== 'schema' && key !== 'patches') {
+      throw new Error(`patch manifest: unknown field "${key}" (expected schema, patches)`)
+    }
+  }
   const schema = record['schema']
   if (schema !== undefined && schema !== 1) throw new Error('patch manifest: unsupported "schema" (expected 1)')
   const list = record['patches']
@@ -132,13 +145,22 @@ export function parseManifest(raw: unknown): PatchManifest {
   for (const [index, item] of list.entries()) {
     if (typeof item !== 'object' || item === null) throw new Error(`patch manifest: "patches[${index}]" must be an object`)
     const entry = item as Record<string, unknown>
+    for (const key of Object.keys(entry)) {
+      if (!ENTRY_FIELDS.includes(key)) {
+        throw new Error(`patch manifest: "patches[${index}]" has an unknown field "${key}" (expected ${ENTRY_FIELDS.join(', ')})`)
+      }
+    }
     const name = text(entry['name'], `patches[${index}].name`)
     if (patches.some(seen => seen.name === name)) throw new Error(`patch manifest: duplicate patch name "${name}"`)
+    const file = text(entry['file'], `patches[${index}].file`)
+    if (patches.some(seen => normalizePatchFile(seen.file).toLowerCase() === normalizePatchFile(file).toLowerCase())) {
+      throw new Error(`patch manifest: duplicate patch file "${file}"`)
+    }
     const issue = optionalText(entry['upstreamIssue'], `patches[${index}].upstreamIssue`)
     const obsoleteSince = optionalText(entry['obsoleteSince'], `patches[${index}].obsoleteSince`)
     patches.push({
       name,
-      file: text(entry['file'], `patches[${index}].file`),
+      file,
       summary: text(entry['summary'], `patches[${index}].summary`),
       ...issue === undefined ? {} : { upstreamIssue: issue },
       verifiedTags: textList(entry['verifiedTags'], `patches[${index}].verifiedTags`),
