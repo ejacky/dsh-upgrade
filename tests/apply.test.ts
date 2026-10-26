@@ -39,7 +39,24 @@ async function freePort(): Promise<number> {
   })
 }
 
-/** Stand-in pnpm writing a serving entry that answers 200, or one that dies immediately. */
+/**
+ * Kill whatever serves a port.
+ *
+ * `apply` starts a real detached server on purpose, so a test that leaves it running would leak
+ * a process and the port into every later run.
+ * @param port - the port to evacuate.
+ */
+function stopPort(port: number): void {
+  if (process.platform !== 'win32') return
+  const listed = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true })
+  for (const line of listed.stdout.split(/\r?\n/)) {
+    if (!line.includes(`:${port} `) || !line.includes('LISTENING')) continue
+    const pid = line.trim().split(/\s+/).at(-1)
+    if (pid !== undefined) spawnSync('taskkill', ['/PID', pid, '/T', '/F'], { encoding: 'utf8', windowsHide: true })
+  }
+}
+
+/** Stand-in pnpm writing a serving entry that answers 200. */
 const FAKE_PNPM = `
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -52,14 +69,12 @@ if (command === 'run' && rest[0] === 'build') {
   writeFileSync(join(root, '.dsh-build', 'client-build-environment.json'), JSON.stringify({
     formatVersion: 1, environment: { DSH_CLIENT_VERSION: '0.0.0-fake' }, artifacts: { fileCount: 1 },
   }))
-  writeFileSync(join(root, 'apps', 'cli', 'lib', 'bin.js'), process.env.FAKE_BREAK_ENTRY === '1'
-    ? 'process.exit(7)\\n'
-    : [
-      "import { createServer } from 'node:http'",
-      "const at = process.argv.indexOf('--port')",
-      'const port = Number(process.argv[at + 1] ?? 0)',
-      "createServer((req, res) => { res.writeHead(200); res.end('ok') }).listen(port, '127.0.0.1', () => console.log('fake up ' + port))",
-    ].join('\\n'))
+  writeFileSync(join(root, 'apps', 'cli', 'lib', 'bin.js'), [
+    "import { createServer } from 'node:http'",
+    "const at = process.argv.indexOf('--port')",
+    'const port = Number(process.argv[at + 1] ?? 0)',
+    "createServer((req, res) => { res.writeHead(200); res.end('ok') }).listen(port, '127.0.0.1', () => console.log('fake up ' + port))",
+  ].join('\\n'))
   process.exit(0)
 }
 console.error('fake pnpm: unsupported ' + command)
@@ -90,8 +105,9 @@ function state(root: string): { deployed: { tag: string, slot: string } | null, 
   return JSON.parse(readFileSync(join(root, 'state', 'upgrade-state.json'), 'utf8')) as { deployed: { tag: string, slot: string } | null, staged: unknown }
 }
 
-test('apply flips the stable path, serves the staged slot, and records it', async () => {
+test('apply flips the stable path, serves the staged slot, and records it', async (t) => {
   const { root, fakePnpm, webPort } = await fixture()
+  t.after(() => stopPort(webPort))
   const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000' }
   assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
   assert.equal(run(['apply', '--wait', '--json'], root, env).status, 0)
@@ -101,29 +117,29 @@ test('apply flips the stable path, serves the staged slot, and records it', asyn
   assert.equal(after.staged, null)
   const response = await fetch(`http://127.0.0.1:${webPort}/`)
   assert.equal(response.status, 200)
-  assert.equal(run(['stop', '--json'], root, env).status, 5) // `stop` is still a stub
 })
 
-// TODO(M3): the second stage in this fixture exits 4 before the switch runs; re-enable once the
-// multi-slot fixture (worktree of the cloned slot) is fixed. The rollback path itself is implemented.
-test.skip('a version that never answers is rolled back automatically', async () => {
-  const { root, fakePnpm } = await fixture()
+test('a version that never answers is rolled back automatically', async (t) => {
+  const { root, fakePnpm, webPort } = await fixture()
+  t.after(() => stopPort(webPort))
   const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '3000' }
+
+  // Serve rc.2 from slot a, then stage rc.3 into slot b (which smoke-tests fine).
   const firstStage = run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env)
-  assert.equal(firstStage.status, 0, 'stage1: ' + firstStage.stderr)
+  assert.equal(firstStage.status, 0, `stage1: ${firstStage.stderr}`)
   const firstApply = run(['apply', '--wait', '--no-start', '--json'], root, env)
-  assert.equal(firstApply.status, 0, 'apply1: ' + firstApply.stderr + firstApply.stdout + ' staged=' + JSON.stringify(state(root).staged))
-  const second = run(['stage', '--tag', 'dsh-v0.2.1-rc.3', '--json'], root, env)
-  assert.equal(second.status, 0, 'second stage failed: ' + second.stderr + second.stdout)
-  const broken = run(['stage', '--tag', 'dsh-v0.2.1-rc.3', '--force', '--json'], root, { ...env, FAKE_BREAK_ENTRY: '1' })
-  assert.equal(broken.status, 0, broken.stderr)
+  assert.equal(firstApply.status, 0, `apply1: ${firstApply.stderr}${firstApply.stdout}`)
+  const secondStage = run(['stage', '--tag', 'dsh-v0.2.1-rc.3', '--json'], root, env)
+  assert.equal(secondStage.status, 0, `stage2: ${secondStage.stderr}${secondStage.stdout}`)
+
+  // A staged version that passes its smoke can still fail to start later (a missing runtime
+  // dependency of the real DSH_HOME, a port race). Simulate exactly that by replacing the
+  // built entry of the spare slot after staging.
+  writeFileSync(join(root, 'dsh-slots', 'b', 'apps', 'cli', 'lib', 'bin.js'), 'process.exit(7)\n', 'utf8')
+
   const switched = run(['apply', '--wait', '--json'], root, env)
-  assert.equal(switched.status, 4)
+  assert.equal(switched.status, 4, `apply2: ${switched.stderr}${switched.stdout}`)
   const after = state(root)
   assert.equal(after.deployed?.tag, 'dsh-v0.2.1-rc.2', 'the previous version stays recorded')
-  assert.match(readlinkSync(join(root, 'deepseek-harness')), /dsh-slots.a$/)
+  assert.match(readlinkSync(join(root, 'deepseek-harness')), /dsh-slots.a$/, 'the stable path points back at slot a')
 })
-
-
-
-
