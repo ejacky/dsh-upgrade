@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { readToolVersion } from './version.ts'
 import { runApply, runRollback } from './commands/apply.ts'
 import { runCheck } from './commands/check.ts'
+import { runShortcuts, runStart, runStop, runToggle } from './commands/power.ts'
 import { runInit } from './commands/init.ts'
 import { runStage } from './commands/stage.ts'
 import { runStatus } from './commands/status.ts'
@@ -87,9 +88,14 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     run: runApply,
   },
   rollback: { summary: 'switch back to the previous version', usage: '[--no-start]', implemented: true, run: runRollback },
-  toggle: { summary: 'stop the web server when it runs, otherwise start it (one-icon behaviour)', implemented: false },
-  start: { summary: 'start the web server and wait until it answers', implemented: false },
-  stop: { summary: 'stop the web server', implemented: false },
+  toggle: {
+    summary: 'stop the web server when it runs, otherwise start it (one-icon behaviour)',
+    usage: '[--yes]',
+    implemented: true,
+    run: runToggle,
+  },
+  start: { summary: 'start the web server and wait until it answers', implemented: true, run: runStart },
+  stop: { summary: 'stop the web server', implemented: true, run: (_args, options) => runStop(options) },
   doctor: { summary: 'probe the machine and report what needs fixing', usage: '[--live]', implemented: false },
   'opencode-session': {
     summary: 'install, remove, or report the bundled x-opencode-session plugin',
@@ -97,7 +103,12 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     implemented: false,
   },
   patch: { summary: 'list, verify, add, or remove source patches', usage: '[list|verify|add|remove]', implemented: false },
-  shortcuts: { summary: 'create or remove the desktop and taskbar launchers', usage: '[--install|--remove]', implemented: false },
+  shortcuts: {
+    summary: 'create or remove the desktop launchers',
+    usage: '[--install|--remove]',
+    implemented: true,
+    run: runShortcuts,
+  },
   tray: { summary: 'run the tray companion', implemented: false },
   task: { summary: 'install, remove, or report the scheduled check task', usage: '[install|remove|status]', implemented: false },
   log: { summary: 'print the recent log lines', usage: '[--tail <n>]', implemented: false },
@@ -252,6 +263,7 @@ function usageError(message: string): number {
 }
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2)))
+
 
 
 

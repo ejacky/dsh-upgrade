@@ -159,3 +159,42 @@ test('a slot whose entry is missing is rolled back and the old version keeps ser
   const response = await fetch(`http://127.0.0.1:${webPort}/`)
   assert.equal(response.status, 200, 'the old version must be serving again')
 })
+
+test('start brings the serving slot up and stop frees the port', async () => {
+  const { root, fakePnpm, webPort } = await fixture()
+  const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000' }
+  test.after(() => stopPort(webPort))
+  assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
+  assert.equal(run(['apply', '--wait', '--no-start', '--json'], root, env).status, 0)
+
+  const started = run(['start', '--json'], root, env)
+  assert.equal(started.status, 0, started.stderr)
+  assert.equal((await fetch(`http://127.0.0.1:${webPort}/`)).status, 200)
+
+  const stopped = run(['stop', '--json'], root, env)
+  assert.equal(stopped.status, 0, stopped.stderr)
+  let free = false
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await new Promise(resolve => { setTimeout(resolve, 250) })
+    if (!portBusy(webPort)) { free = true; break }
+  }
+  assert.equal(free, true, 'the port must be free after stop')
+  assert.equal(run(['toggle', '--yes', '--json'], root, env).status, 0)
+})
+
+test('toggle refuses to stop without consent when there is no terminal', async () => {
+  const { root, fakePnpm, webPort } = await fixture()
+  const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000' }
+  test.after(() => stopPort(webPort))
+  assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
+  assert.equal(run(['apply', '--wait', '--json'], root, env).status, 0)
+  const refused = run(['toggle', '--json'], root, env)
+  assert.equal(refused.status, 3)
+  assert.match(refused.stderr, /pass --yes/)
+})
+
+/** Whether something listens on a port. */
+function portBusy(port: number): boolean {
+  const result = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true })
+  return result.stdout.split(/\r?\n/).some(line => line.includes(`:${port} `) && line.includes('LISTENING'))
+}
