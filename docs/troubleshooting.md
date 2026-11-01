@@ -85,6 +85,10 @@ The tray companion is Windows-only; on Linux `tray` exits `3` and points at `sho
   the default name, `~/.config/systemd/user/DshUpstreamUpgrade.{service,timer}` — and enables the
   timer. `systemctl --user status DshUpstreamUpgrade.timer` and
   `journalctl --user -u DshUpstreamUpgrade.service` are the two places to look.
+- If the service sits in `activating` for minutes, its `git fetch` cannot reach GitHub: the user
+  manager has no proxy. Re-run `task install` from a shell that exports `http_proxy`/`https_proxy`
+  (the unit pins them), or `systemctl --user import-environment http_proxy https_proxy`. A fetch
+  that stalls still fails after ten minutes (`DSH_UPGRADE_GIT_TIMEOUT_MS` overrides the bound).
 - A systemd user timer stops when the last session ends. `loginctl enable-linger "$USER"` keeps
   it running while logged out; `task status` reports the state it finds.
 - Without a systemd user session, `task install` exits `3`; `task install --dry-run` prints the

@@ -8,6 +8,9 @@
  */
 import { execFileSync } from 'node:child_process'
 
+/** Upper bound for one git command; a stalled network fetch must fail, not hold the timer. */
+const GIT_TIMEOUT_MS = Number(process.env['DSH_UPGRADE_GIT_TIMEOUT_MS'] ?? 10 * 60 * 1000)
+
 /** Outcome of one git invocation. */
 export interface GitResult {
   /** Whether git exited 0. */
@@ -26,7 +29,7 @@ export interface GitResult {
  */
 export function git(args: readonly string[], cwd: string): GitResult {
   try {
-    const stdout = execFileSync('git', [...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    const stdout = execFileSync('git', [...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: GIT_TIMEOUT_MS })
     return { ok: true, stdout, stderr: '' }
   } catch (error) {
     const failure = error as { stdout?: unknown, stderr?: unknown, message?: string }

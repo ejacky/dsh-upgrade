@@ -74,6 +74,13 @@ function parseFlags(args: readonly string[]): TaskFlags {
     if (argument === undefined) continue
     if (argument === '--s4u') { s4u = true; continue }
     if (argument === '--dry-run') { dryRun = true; continue }
+    // The watcher units and wrappers generated before the verb spelling was fixed say
+    // `task --run`; accept it so an installed watcher starts working without a reinstall.
+    if (argument === '--run') {
+      if (verb !== undefined) throw new Error(`unexpected argument "${argument}"`)
+      verb = 'run'
+      continue
+    }
     if (argument === '--interval' || argument === '--name') {
       const value = args[index + 1]
       if (value === undefined || value === '') throw new Error(`${argument} needs a value`)
@@ -238,7 +245,7 @@ function systemctl(args: readonly string[], timeoutMs = 60_000): { code: number,
  * @param wrapper - the `.vbs` launcher being written.
  */
 function wrapperSource(cli: string, configPath: string, wrapper: string): string {
-  const command = `"${process.execPath}" "${cli}" task --run --config "${configPath}"`
+  const command = `"${process.execPath}" "${cli}" task run --config "${configPath}"`
   return `\uFEFF${[
     "' Runs one watcher pass with no console window.",
     'Set sh = CreateObject("WScript.Shell")',
@@ -294,6 +301,23 @@ function unitPathValue(value: string): string {
 }
 
 /**
+ * Environment entries the timer needs but the user manager does not have.
+ *
+ * Only variables present at install time are pinned; an empty or absent one is left to the
+ * manager so the unit does not bake in a value the operator never had.
+ * @returns `NAME=value` entries.
+ */
+function unitEnvironment(): string[] {
+  const names = ['PATH', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY']
+  const entries: string[] = []
+  for (const name of names) {
+    const value = process.env[name]
+    if (value !== undefined && value !== '') entries.push(`${name}=${value}`)
+  }
+  return entries
+}
+
+/**
  * The oneshot unit: one watcher pass per timer activation.
  * @param config - resolved tool configuration.
  * @param paths - resolved paths.
@@ -308,11 +332,10 @@ function serviceUnitText(config: Config, paths: TaskPaths): string {
     '[Service]',
     'Type=oneshot',
     `WorkingDirectory=${unitPathValue(config.root)}`,
-    // The user manager's PATH is not the login shell's, and staging needs git and pnpm on it.
-    ...process.env['PATH'] === undefined || process.env['PATH'] === ''
-      ? []
-      : [`Environment=${unitQuote(`PATH=${process.env['PATH']}`)}`],
-    `ExecStart=${[process.execPath, paths.cli, 'task', '--run', '--config', paths.configPath].map(unitQuote).join(' ')}`,
+    // The user manager's environment is not the login shell's: without PATH, staging cannot
+    // find git or pnpm, and without the proxy the fetch to GitHub hangs until it times out.
+    ...unitEnvironment().map(entry => `Environment=${unitQuote(entry)}`),
+    `ExecStart=${[process.execPath, paths.cli, 'task', 'run', '--config', paths.configPath].map(unitQuote).join(' ')}`,
     '',
   ].join('\n')
 }
@@ -732,6 +755,8 @@ function linuxInstall(config: Config, paths: TaskPaths, flags: TaskFlags, option
   }
   const service = serviceUnitText(config, paths)
   const timer = timerUnitText(unit, flags.interval)
+  const environment = unitEnvironment().map(entry => entry.slice(0, entry.indexOf('=')))
+  const hasProxy = environment.some(name => /proxy/i.test(name))
   const fail = (message: string): number => {
     // Units that were never proven to work are removed: `status` reads the files, so a leftover
     // unit would make it report an install that systemd rejected. `enable` may already have
@@ -752,6 +777,7 @@ function linuxInstall(config: Config, paths: TaskPaths, flags: TaskFlags, option
         s4u: false,
         serviceUnitText: service,
         timerUnitText: timer,
+        environment,
         registration: `systemctl --user enable --now ${unit}.timer`,
       })}\n`)
       return EXIT.ok
@@ -800,13 +826,15 @@ function linuxInstall(config: Config, paths: TaskPaths, flags: TaskFlags, option
     return fail(`the timer ${unit}.timer is not active after install; it was enabled but did not start`)
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify({ ok: true, name: flags.name, interval: flags.interval, installed: true, unit: units.timer, log: paths.log })}\n`)
+    process.stdout.write(`${JSON.stringify({ ok: true, name: flags.name, interval: flags.interval, installed: true, unit: units.timer, log: paths.log, environment })}\n`)
     return EXIT.ok
   }
   process.stdout.write([
     `registered ${unit}.timer every ${flags.interval} minutes (while your user session exists)`,
     `  unit     ${units.timer}`,
     `  log      ${paths.log}`,
+    `  env      ${environment.join(', ')}`,
+    ...hasProxy ? [] : ['  !        no proxy in this shell; if the fetch cannot reach GitHub, set http_proxy/https_proxy and re-run "task install"'],
     '  the timer prepares a new version; it never switches to it',
     '  to keep it running while logged out: loginctl enable-linger "$USER"',
   ].join('\n') + '\n')

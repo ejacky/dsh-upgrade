@@ -91,7 +91,7 @@ test('task install --dry-run describes the wrapper and the registration', async 
   assert.equal(report.name, 'DshUpstreamUpgrade')
   assert.equal(report.interval, 30)
   assert.equal(report.wrapper, join(root, 'bin', 'dsh-upgrade-task.vbs'))
-  assert.match(report.wrapperSource, /task --run --config/)
+  assert.match(report.wrapperSource, /task run --config/)
   assert.ok(report.wrapperSource.includes(cliEntryPath()), 'the wrapper must run the CLI entry')
   assert.ok(!report.wrapperSource.includes('commands'), 'the wrapper must not run a command module')
   assert.match(report.registration, /New-TimeSpan -Minutes 30/)

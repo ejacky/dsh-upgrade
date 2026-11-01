@@ -129,8 +129,11 @@ when a newer tag exists. It never applies.
   reports `installed`, `state`, `subState`, `lastRun`/`nextRun` (ISO 8601), `lastResult` (the
   service's exit status, `null` before the first run), `logonType: "systemd-user"`,
   `intervalMinutes`, and `unit` (the timer's path). `--s4u` is rejected with exit `2`;
-  `--dry-run --json` returns `serviceUnitText`, `timerUnitText`, `unit`, and `registration`
-  without writing anything.
+  `--dry-run --json` returns `serviceUnitText`, `timerUnitText`, `unit`, `environment`, and
+  `registration` without writing anything. The unit pins the installing shell's `PATH` and any
+  proxy variables (`http_proxy`, `https_proxy`, `all_proxy`, `no_proxy`, upper or lower case), so
+  `git fetch` behaves the way it did in that shell; with no proxy set, `install` prints a warning
+  because the user manager does not have one either.
 - Both platforms write `logs/watch.log`, one line per pass.
 
 ### `log [--tail <n>] [--file <name|path>] [--list]`

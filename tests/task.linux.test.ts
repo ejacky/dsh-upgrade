@@ -61,6 +61,7 @@ test('task install --dry-run describes the systemd units and writes nothing', (c
     interval: number
     serviceUnitText: string
     timerUnitText: string
+    environment: string[]
     registration: string
   }
   assert.equal(report.ok, true)
@@ -78,11 +79,12 @@ test('task install --dry-run describes the systemd units and writes nothing', (c
   )
   assert.match(report.serviceUnitText, /Type=oneshot/)
   assert.ok(report.serviceUnitText.includes(cliEntryPath()), 'the unit must run the CLI entry')
-  assert.match(report.serviceUnitText, /--run/)
+  assert.ok(report.serviceUnitText.includes('"run"'), 'the unit must run the watcher verb, not a flag')
   assert.match(report.timerUnitText, /OnUnitActiveSec=30min/)
   assert.match(report.timerUnitText, /Unit=DshUpstreamUpgrade\.service/)
   assert.match(report.timerUnitText, /WantedBy=timers\.target/)
   assert.match(report.registration, /systemctl --user enable --now DshUpstreamUpgrade\.timer/)
+  assert.ok(report.environment.includes('PATH'), 'the unit must pin the PATH staging needs')
   assert.equal(existsSync(join(root, '.xdg-config', 'systemd', 'user')), false, 'a dry run writes nothing')
 })
 
@@ -206,4 +208,15 @@ test('task status maps the systemd fields onto the documented JSON', (context) =
   assert.equal(report.lastResult, 3, 'the service exit status must reach the report')
   assert.equal(report.logonType, 'systemd-user')
   assert.equal(report.intervalMinutes, 30)
+})
+
+test('the old "--run" spelling still starts a watcher pass', (context) => {
+  if (skipUnlessPosix(context)) return
+  const root = fixture()
+  const pass = run(['task', '--run', '--json'], root)
+  // It ran the pass (check found no slot), rather than dying in argument parsing with exit 2.
+  assert.equal(pass.status, 4, pass.stderr)
+  const report = JSON.parse(pass.stdout) as { ok: boolean, error: string }
+  assert.equal(report.ok, false)
+  assert.match(report.error, /no slot checkout/)
 })
