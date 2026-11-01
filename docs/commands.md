@@ -78,8 +78,10 @@ under the layout lock. `--json` is the same object `apply --wait` emits.
 
 ### `toggle [--yes]` / `start` / `stop`
 One-icon control. `toggle` starts when the port is free and stops when it is held; stopping asks
-for consent on a terminal (20 s deadline, silence means "keep running") and needs `--yes`
-otherwise. `stop` only reports success when the port is actually free.
+for consent on a terminal (20 s deadline, silence means "keep running"). A desktop launcher has
+no terminal: in a graphical session it asks in a dialog (the first of zenity, kdialog, yad, or
+xmessage that is installed), and with none installed it exits `3` and says so. `--yes` skips the
+question. `stop` only reports success when the port is actually free.
 
 ### `doctor [--fix]`
 Probes configuration, Node 24, git, pnpm, both ports, disk space, the stable path, slot
@@ -105,7 +107,9 @@ fails.
 Launchers for start/stop and update. On Windows they are hidden `wscript` wrappers written as
 UTF-16LE so non-ASCII paths survive (the `.cmd` copies stay ASCII) plus desktop `.lnk` files; on
 Linux they are `.desktop` entries in `$XDG_DATA_HOME/applications` (default
-`~/.local/share/applications`). There is no tray entry on Linux because there is no tray.
+`~/.local/share/applications`) with `Icon=` names backed by SVGs installed under
+`$XDG_DATA_HOME/icons/hicolor/scalable/apps`. The start/stop entry runs `toggle` without
+`--yes`, so it asks before acting. There is no tray entry on Linux because there is no tray.
 
 ### `tray [--dry-run]`
 Runs the PowerShell 7 tray companion (Windows). `--dry-run` prints the exact command, which is

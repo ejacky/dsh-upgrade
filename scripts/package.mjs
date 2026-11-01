@@ -25,7 +25,7 @@ const IS_WINDOWS = PLATFORM === 'win32'
 const ARCHIVE_EXTENSION = IS_WINDOWS ? 'zip' : 'tar.gz'
 
 /** Directories shipped whole, in the order they appear in the archive. */
-const DIRECTORIES = ['src', ...IS_WINDOWS ? ['engine-ps'] : [], 'patches', 'docs']
+const DIRECTORIES = ['src', ...IS_WINDOWS ? ['engine-ps'] : [], 'patches', 'docs', 'assets']
 
 /** Files shipped at the archive root. The installer is the one platform-specific file. */
 const FILES = [
@@ -41,6 +41,7 @@ const REQUIRED = [
   'src/cli.ts',
   'patches/manifest.json',
   ...IS_WINDOWS ? ['engine-ps/tray.ps1', 'setup.cmd'] : ['setup.sh'],
+  'assets/dsh-upgrade-start.svg',
 ]
 
 /**

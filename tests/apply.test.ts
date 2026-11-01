@@ -227,11 +227,15 @@ test('start brings the serving slot up and stop frees the port', async () => {
 
 test('toggle refuses to stop without consent when there is no terminal', async () => {
   const { root, fakePnpm, webPort } = await fixture()
-  const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000' }
+  // No display: the toggle either asks on the terminal or refuses; it must not open a dialog.
+  const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000', DISPLAY: '', WAYLAND_DISPLAY: '' }
   test.after(() => stopPort(webPort))
   assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
   assert.equal(run(['apply', '--wait', '--json'], root, env).status, 0)
   const refused = run(['toggle', '--json'], root, env)
   assert.equal(refused.status, 3)
-  assert.match(refused.stderr, /pass --yes/)
+  const refusal = JSON.parse(refused.stdout) as { ok: boolean, error: string, nextAction: string }
+  assert.equal(refusal.ok, false)
+  assert.equal(refusal.nextAction, 'human')
+  assert.match(refusal.error, /pass --yes/)
 })

@@ -1,18 +1,19 @@
 /**
  * `toggle` / `start` / `stop`: the one-icon control of the serving web app.
  *
- * The tray and the desktop shortcut both call `toggle`, which starts the server when the port
- * is free and otherwise stops it. Stopping is destructive enough that it needs consent:
- * `--yes` (the tray asks in its own dialog) or an interactive terminal.
+ * The tray (Windows) and the desktop launchers both call `toggle`, which starts the server when
+ * the port is free and otherwise stops it. Stopping is destructive enough that it needs consent:
+ * `--yes` (the tray asks in its own dialog), an interactive terminal, or — for a POSIX launcher,
+ * which has no terminal — a desktop dialog.
  *
  * @module dsh-upgrade/commands/power
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { accessSync, constants as fsConstants, cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig, resolveConfigPath, type Config } from '../engine/config.ts'
 import { cliEntryPath } from '../engine/entry.ts'
-import { IS_WINDOWS, portFree, shortcutDirectory, waitPortFree } from '../engine/host.ts'
+import { IS_WINDOWS, iconDirectory, portFree, shortcutDirectory, waitPortFree } from '../engine/host.ts'
 import { portOwner, startService, stopService, waitForService } from '../engine/service.ts'
 import { activeSlot, slotPath } from '../engine/slots.ts'
 import type { RunOptions } from '../cli.ts'
@@ -27,6 +28,74 @@ import type { RunOptions } from '../cli.ts'
  */
 function unidentifiedListener(port: number): string {
   return `${port} is in use by a process this account cannot identify; find it with "sudo ss -ltnp 'sport = :${port}'"`
+}
+
+/**
+ * Whether a graphical session is available to answer a dialog.
+ * @returns `true` when `DISPLAY` or `WAYLAND_DISPLAY` names a session.
+ */
+function hasDisplay(): boolean {
+  const display = process.env['DISPLAY']
+  const wayland = process.env['WAYLAND_DISPLAY']
+  return (display !== undefined && display !== '') || (wayland !== undefined && wayland !== '')
+}
+
+/**
+ * Find an executable on `PATH`.
+ * @param name - executable name.
+ * @returns its absolute path, or `undefined` when it is not there.
+ */
+function findExecutable(name: string): string | undefined {
+  const path = process.env['PATH']
+  if (path === undefined) return undefined
+  for (const directory of path.split(':')) {
+    if (directory === '') continue
+    const candidate = join(directory, name)
+    try {
+      accessSync(candidate, fsConstants.X_OK)
+      return candidate
+    } catch {
+      // Not in this directory; keep looking.
+    }
+  }
+  return undefined
+}
+
+/**
+ * Ask a yes/no question in a desktop dialog.
+ *
+ * A POSIX launcher starts with no terminal, so this is the only way to honour "ask before
+ * switching". The first toolkit present is used; `undefined` means none is installed and the
+ * caller must refuse rather than guess.
+ * @param question - the sentence shown to the person.
+ * @returns `true` for yes, `false` for no, `undefined` when no dialog tool exists.
+ */
+function guiQuestion(question: string): boolean | undefined {
+  const title = 'DeepSeek Harness'
+  const dialogs: readonly { readonly file: string, readonly args: readonly string[] }[] = [
+    { file: 'zenity', args: ['--question', `--title=${title}`, `--text=${question}`] },
+    { file: 'kdialog', args: ['--title', title, '--yesno', question] },
+    { file: 'yad', args: [`--title=${title}`, `--text=${question}`, '--button=No:1', '--button=Yes:0'] },
+    { file: 'xmessage', args: ['-center', '-title', title, '-buttons', 'No:1,Yes:0', '-default', 'No', question] },
+  ]
+  for (const dialog of dialogs) {
+    if (findExecutable(dialog.file) === undefined) continue
+    const result = spawnSync(dialog.file, [...dialog.args], { stdio: 'ignore' })
+    if (result.error === undefined) return result.status === 0
+  }
+  return undefined
+}
+
+/**
+ * Report that a launcher cannot ask without a dialog tool.
+ * @param options - global options.
+ * @returns the exit code (3: a person must install one or pass `--yes`).
+ */
+function noDialog(options: RunOptions): number {
+  const message = 'no dialog tool found (install zenity, kdialog, yad, or xmessage), or pass --yes'
+  if (options.json) process.stdout.write(`${JSON.stringify({ ok: false, error: message, nextAction: 'human' })}\n`)
+  else process.stderr.write(`dsh-upgrade toggle: ${message}\n`)
+  return 3
 }
 
 /** Shared context for the three commands. */
@@ -147,34 +216,53 @@ export async function runToggle(args: readonly string[], options: RunOptions): P
   }
   const context = contextOf(options)
   if (context === undefined) return 4
-  const owner = portOwner(context.config.webPort)
+  const port = context.config.webPort
+  const owner = portOwner(port)
   if (owner === undefined) {
-    if (await portFree(context.config.webPort)) return runStart([], options)
-    const message = unidentifiedListener(context.config.webPort)
-    process.stderr.write(`dsh-upgrade toggle: ${message}\n`)
-    return 3
-  }
-  if (!yes && process.stdin.isTTY !== true) {
-    process.stderr.write(`dsh-upgrade toggle: running on ${context.config.webPort}; pass --yes to stop it\n`)
-    return 3
+    if (!(await portFree(port))) {
+      const message = unidentifiedListener(port)
+      process.stderr.write(`dsh-upgrade toggle: ${message}\n`)
+      return 3
+    }
+    // Starting is not destructive, so only a launcher (no terminal, a desktop present) is asked;
+    // a terminal start stays one keystroke.
+    if (!yes && process.stdin.isTTY !== true && hasDisplay()) {
+      const start = guiQuestion(`Start DeepSeek Harness on port ${port}?`)
+      if (start === undefined) return noDialog(options)
+      if (!start) {
+        process.stdout.write('kept stopped\n')
+        return 0
+      }
+    }
+    return runStart([], options)
   }
   if (!yes) {
-    process.stdout.write(`DeepSeek Harness is running on ${context.config.webPort}. Stop it? [y/N] `)
-    // A shortcut has nobody at the keyboard: give the answer a deadline and treat silence as "keep".
-    const answer = await Promise.race([
-      new Promise<string>(resolve => {
-        process.stdin.once('data', chunk => resolve(String(chunk).trim().toLowerCase()))
-      }),
-      new Promise<string>(resolve => { setTimeout(() => resolve(''), 20_000) }),
-    ])
-    if (answer !== 'y' && answer !== 'yes') {
-      process.stdout.write('kept running\n')
-      return 0
+    if (process.stdin.isTTY === true) {
+      process.stdout.write(`DeepSeek Harness is running on ${port}. Stop it? [y/N] `)
+      // A shortcut has nobody at the keyboard: give the answer a deadline and treat silence as "keep".
+      const answer = await Promise.race([
+        new Promise<string>(resolve => {
+          process.stdin.once('data', chunk => resolve(String(chunk).trim().toLowerCase()))
+        }),
+        new Promise<string>(resolve => { setTimeout(() => resolve(''), 20_000) }),
+      ])
+      if (answer !== 'y' && answer !== 'yes') {
+        process.stdout.write('kept running\n')
+        return 0
+      }
+    } else {
+      if (!hasDisplay()) return noDialog(options)
+      const stop = guiQuestion(`Stop DeepSeek Harness on port ${port}?`)
+      if (stop === undefined) return noDialog(options)
+      if (!stop) {
+        process.stdout.write('kept running\n')
+        return 0
+      }
     }
   }
   const stopped = await runStop(options)
   if (stopped !== 0) return stopped
-  await waitPortFree(context.config.webPort)
+  await waitPortFree(port)
   return 0
 }
 
@@ -186,6 +274,8 @@ export interface Launcher {
   readonly title?: string
   /** CLI arguments the launcher passes. */
   readonly command: string
+  /** Icon name (POSIX `.desktop`), installed beside the entry. */
+  readonly icon?: string
   /** `false` for a program that outlives its launcher, like the tray. */
   readonly wait: boolean
 }
@@ -201,9 +291,13 @@ export const LAUNCHERS: readonly Launcher[] = [
  * The launchers POSIX installs.
  *
  * There is no tray companion outside Windows, so the entry that would start one is left out
- * rather than installed broken. `tray` says so when it is called.
+ * rather than installed broken. `toggle` runs without `--yes` on purpose: a launcher has no
+ * terminal, and the command asks in a desktop dialog before it starts or stops anything.
  */
-export const POSIX_LAUNCHERS: readonly Launcher[] = LAUNCHERS.filter(launcher => launcher.name !== 'dsh-upgrade-tray')
+export const POSIX_LAUNCHERS: readonly Launcher[] = [
+  { name: 'dsh-upgrade-start', title: 'DeepSeek Harness: start or stop', command: 'toggle', icon: 'dsh-upgrade-start', wait: true },
+  { name: 'dsh-upgrade-update', title: 'DeepSeek Harness: update', command: 'apply --wait', icon: 'dsh-upgrade-update', wait: true },
+]
 
 /** The two wrapper files of one launcher. */
 export interface LauncherFiles {
@@ -282,6 +376,7 @@ export function desktopEntry(launcher: Launcher, cli: string, node: string, work
     'Version=1.0',
     `Name=${desktopValue(launcher.title ?? launcher.name)}`,
     `Comment=${desktopValue(`Run: dsh-upgrade ${launcher.command}`)}`,
+    `Icon=${launcher.icon ?? launcher.name}`,
     `Exec=${command}`,
     `Path=${desktopValue(workingDirectory)}`,
     'Terminal=false',
@@ -378,9 +473,13 @@ function windowsShortcuts(config: Config, remove: boolean, options: RunOptions):
  */
 function posixShortcuts(config: Config, remove: boolean, options: RunOptions): number {
   const directory = shortcutDirectory()
+  const icons = iconDirectory()
   if (remove) {
     const existed = LAUNCHERS.some(launcher => existsSync(join(directory, `${launcher.name}.desktop`)))
-    for (const launcher of LAUNCHERS) rmSync(join(directory, `${launcher.name}.desktop`), { force: true })
+    for (const launcher of LAUNCHERS) {
+      rmSync(join(directory, `${launcher.name}.desktop`), { force: true })
+      rmSync(join(icons, `${launcher.name}.svg`), { force: true })
+    }
     if (options.json) process.stdout.write(`${JSON.stringify({ ok: true, removed: existed })}\n`)
     else process.stdout.write('removed launchers\n')
     return 0
@@ -388,6 +487,11 @@ function posixShortcuts(config: Config, remove: boolean, options: RunOptions): n
   mkdirSync(directory, { recursive: true })
   const written: string[] = []
   for (const launcher of POSIX_LAUNCHERS) {
+    const asset = join(options.toolRoot, 'assets', `${launcher.name}.svg`)
+    if (existsSync(asset)) {
+      mkdirSync(icons, { recursive: true })
+      cpSync(asset, join(icons, `${launcher.name}.svg`))
+    }
     const path = join(directory, `${launcher.name}.desktop`)
     writeFileSync(path, desktopEntry(launcher, cliEntryPath(), process.execPath, config.root), 'utf8')
     written.push(path)
@@ -399,7 +503,7 @@ function posixShortcuts(config: Config, remove: boolean, options: RunOptions): n
   process.stdout.write([
     'created launchers:',
     ...written.map(path => `  ${path}`),
-    '  they appear in the application menu; no panel icon is installed',
+    '  they appear in the application menu with their icons; no panel icon is installed',
   ].join('\n') + '\n')
   return 0
 }

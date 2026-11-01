@@ -78,7 +78,9 @@ test('desktopEntry escapes what Exec and Path cannot carry', () => {
   assert.ok(exec.includes('\\`'), 'a backtick must be escaped inside Exec')
   assert.ok(exec.includes('\\$'), 'a dollar must be escaped inside Exec (reserved inside quotes)')
   assert.ok(exec.includes('%%'), 'a percent must be doubled inside Exec (it is a field code)')
-  assert.ok(exec.includes('"toggle" "--yes"'), 'the command must be passed as separate arguments')
+  assert.ok(exec.includes('"toggle"'), 'the command must be passed as separate arguments')
+  assert.ok(!exec.includes('--yes'), 'a launcher asks in a dialog, it does not pre-answer')
+  assert.match(entry, /^Icon=dsh-upgrade-start$/m, 'the entry must name its icon')
 
   // Path is a string value: no quotes (they would become part of the path), `%` is literal, and
   // a backslash must be doubled.
@@ -96,14 +98,19 @@ test('shortcuts --install writes, repeats, and removes the POSIX launchers', (co
   assert.equal(report.launchers.length, POSIX_LAUNCHERS.length)
   assert.equal(report.launchers.some(path => path.includes('tray')), false, 'no tray entry on Linux')
 
+  const iconDir = join(root, '.xdg-data', 'icons', 'hicolor', 'scalable', 'apps')
   for (const path of report.launchers) {
     assert.ok(existsSync(path), `expected ${path}`)
     const text = readFileSync(path, 'utf8')
     assert.match(text, /^\[Desktop Entry\]$/m)
-    assert.match(text, /^Exec=.*"(toggle|apply)" "--(yes|wait)"$/m)
+    assert.match(text, /^(Exec=.*"toggle"|Exec=.*"apply" "--wait")$/m)
+    assert.match(text, /^Icon=dsh-upgrade-(start|update)$/m)
     assert.match(text, /^Path=/m)
     assert.match(text, /^Terminal=false$/m)
     assert.ok(!text.includes('dsh-upgrade-tray'))
+  }
+  for (const launcher of POSIX_LAUNCHERS) {
+    assert.ok(existsSync(join(iconDir, `${launcher.name}.svg`)), `expected the icon for ${launcher.name}`)
   }
 
   // Installing twice must not duplicate or break an entry.
@@ -116,6 +123,7 @@ test('shortcuts --install writes, repeats, and removes the POSIX launchers', (co
   assert.equal(removal.ok, true)
   assert.equal(removal.removed, true)
   for (const path of report.launchers) assert.equal(existsSync(path), false)
+  for (const launcher of POSIX_LAUNCHERS) assert.equal(existsSync(join(iconDir, `${launcher.name}.svg`)), false)
 
   const again = run(['shortcuts', '--remove', '--json'], root)
   assert.equal(again.status, 0)

@@ -67,7 +67,9 @@ The tray companion is Windows-only; on Linux `tray` exits `3` and points at `sho
 - The companion needs PowerShell 7. `doctor` reports `powershell-7` on Windows.
 - A second instance exits immediately with a message box; the tray is per session.
 - A tray start with no configuration prints "run dsh-upgrade init".
-- On Linux, use `toggle` or the `.desktop` launchers from `shortcuts --install`.
+- On Linux, use `toggle` or the `.desktop` launchers from `shortcuts --install`. A launcher
+  asks before starting or stopping; if no dialog tool is installed (zenity, kdialog, yad, or
+  xmessage), it exits `3` and says so — install one, or run `toggle --yes`.
 
 ## The watcher never runs
 

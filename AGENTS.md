@@ -36,6 +36,7 @@ src/engine/host.ts    the platform seam: ports, process tree, links, launcher/un
 src/version.ts        reads version.json
 engine-ps/tray.ps1    the tray companion (PowerShell 7 + WinForms, Windows only)
 patches/manifest.json the patch catalog (empty by default)
+assets/*.svg           launcher icons installed beside the POSIX .desktop entries
 scripts/package.mjs   builds the green zip (Windows) or tarball (Linux)
 setup.cmd             ASCII-only one-shot installer for an unpacked Windows release
 setup.sh              POSIX sh one-shot installer for an unpacked Linux release

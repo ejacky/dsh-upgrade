@@ -387,6 +387,15 @@ export function shortcutDirectory(): string {
 }
 
 /**
+ * Directory for the application icons a launcher references.
+ * @returns `$XDG_DATA_HOME/icons/hicolor/scalable/apps`, defaulting under `~/.local/share`.
+ */
+export function iconDirectory(): string {
+  const base = absoluteEnv('XDG_DATA_HOME') ?? join(homedir(), '.local', 'share')
+  return join(base, 'icons', 'hicolor', 'scalable', 'apps')
+}
+
+/**
  * Directory for systemd user units.
  * @returns `$XDG_CONFIG_HOME/systemd/user`, defaulting to `~/.config/systemd/user`.
  */

@@ -12,6 +12,7 @@ dsh-upgrade-<version>.zip
   .dsh-upgrade-release        version marker (proves this is an unpacked release)
   setup.cmd                   the one-shot installer
   src/                        the tool, run directly by Node 24 (no build step)
+  assets/                     the launcher icons (POSIX desktop entries)
   engine-ps/tray.ps1          the tray companion
   patches/manifest.json       the patch catalog
   docs/                       the documents in this folder
@@ -25,6 +26,7 @@ dsh-upgrade-<version>.tar.gz
   .dsh-upgrade-release        version marker
   setup.sh                    the one-shot installer (POSIX sh, ASCII)
   src/                        the tool, including src/engine/host.ts
+  assets/                     the launcher icons the .desktop entries reference
   patches/manifest.json
   docs/
   package.json, version.json, README.md, LICENSE

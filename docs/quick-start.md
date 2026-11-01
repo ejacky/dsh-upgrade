@@ -58,7 +58,8 @@ does not start. `dsh-upgrade status` shows what is deployed, what is staged, and
 
 - **Launchers**: `shortcuts --install` puts a start/stop entry and an update entry where the
   platform expects them — desktop shortcuts on Windows (plus one for the tray), application-menu
-  `.desktop` entries on Linux.
+  `.desktop` entries with icons on Linux. The Linux start/stop entry asks in a dialog before it
+  starts or stops the server.
 - **Tray** (Windows): `dsh-upgrade tray` gives one icon with open / check / upgrade / rollback /
   logs / quit. Linux has no tray companion; `tray` says so and exits `3`.
 - **Watcher**: `task install` checks every 20 minutes and prepares a new version. It never
