@@ -2,13 +2,12 @@
 /**
  * `dsh-upgrade` command-line entry.
  *
- * Scope of this milestone (M0): the command surface, exit-code contract, `--help`,
- * `--version`, and `--json`. Every other command is listed by `--help` and refuses to run
- * with {@link EXIT.unimplemented} until its milestone lands, so the surface can be reviewed
- * and scripted against before the engine exists.
+ * The command table, the exit-code contract, `--help`, `--version`, and `--json`. Every
+ * command in the table is implemented; {@link EXIT.unimplemented} remains reserved for a
+ * command that is part of the surface but has not landed yet.
  *
  * The tool upgrades a DeepSeek Harness **source checkout**: two slot checkouts (`a`/`b`)
- * behind a stable-path junction, a read-only serving slot, and exactly one writer at a time.
+ * behind a stable-path link, a read-only serving slot, and exactly one writer at a time.
  * It never touches the serving slot while preparing a version, and it never switches on its
  * own.
  *
@@ -22,7 +21,6 @@ import { runDoctor } from './commands/doctor.ts'
 import { runShortcuts, runStart, runStop, runToggle } from './commands/power.ts'
 import { runInit } from './commands/init.ts'
 import { runLog } from './commands/log.ts'
-import { runOpencodeSession } from './commands/opencodeSession.ts'
 import { runPatch } from './commands/patch.ts'
 import { runStage } from './commands/stage.ts'
 import { runStatus } from './commands/status.ts'
@@ -107,12 +105,6 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     usage: '[--fix]',
     implemented: true,
     run: runDoctor,
-  },
-  'opencode-session': {
-    summary: 'install, remove, or report the bundled x-opencode-session plugin',
-    usage: '[install|remove|status] [--dry-run]',
-    implemented: true,
-    run: runOpencodeSession,
   },
   patch: {
     summary: 'list, verify, add, or remove source patches',

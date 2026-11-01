@@ -1,8 +1,8 @@
 /**
  * Tool configuration: one JSON file, validated once, resolved to absolute paths.
  *
- * The file records deployment choices (where the slots live, which upstream to follow,
- * ports, profile name) and policy (build mode, patch list, bundled opencode-session).
+ * The file records deployment choices (where the slots live, which upstream to follow, ports)
+ * and policy (build mode, patch list).
  * Everything the engine does is derived from it, so a machine's layout is reproducible and
  * a second machine only needs a different `root`.
  *
@@ -14,30 +14,13 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 /** File name written by `init` and read by every command. */
 export const CONFIG_FILENAME = 'dsh-upgrade.json'
 
-/** Where the bundled `x-opencode-session` support comes from. */
-export type OpencodeSessionSource = 'builtin' | 'npm' | 'off'
-
-/** Bundled `x-opencode-session` policy. */
-export interface OpencodeSessionConfig {
-  /** `false` behaves like a stock DSH build. */
-  readonly enabled: boolean
-  /** `builtin` uses the vendored plugin; `npm` uses the published package. */
-  readonly source: OpencodeSessionSource
-  /** Range or exact version installed when `source` is `npm`. */
-  readonly npmVersion: string
-  /** Header name the gateway expects. */
-  readonly header: string
-  /** URL substrings that identify the gateway; matched case-insensitively. */
-  readonly urlMarkers: readonly string[]
-}
-
 /** Validated tool configuration with absolute paths. */
 export interface Config {
   /** Metadata revision of this file. */
   readonly schema: 1
   /** Parent directory that holds the slots and the stable path. */
   readonly root: string
-  /** Stable path: a junction to whichever slot is serving. */
+  /** Stable path: the link (junction or symlink) to whichever slot is serving. */
   readonly stablePath: string
   /** Directory holding the slot checkouts. */
   readonly slotsRoot: string
@@ -49,14 +32,10 @@ export interface Config {
   readonly webPort: number
   /** Port used to smoke-test a staged version. */
   readonly smokePort: number
-  /** DSH profile the plugin install targets. */
-  readonly profile: string
   /** `true` when this machine only builds from an administrator console. */
   readonly manualBuild: boolean
   /** Gate parallelism for `pnpm run build`; 1 serialises the build. */
   readonly buildGateConcurrency: number
-  /** Bundled opencode-session policy. */
-  readonly opencodeSession: OpencodeSessionConfig
   /** Source patches applied to every staged slot, relative to the tool root. */
   readonly patchFiles: readonly string[]
 }
@@ -90,7 +69,6 @@ const CONCURRENCY = (value: unknown): number => {
  */
 export function defaultConfig(input: ConfigInput): Config {
   const root = resolve(input.root)
-  const session = input.opencodeSession
   return {
     schema: 1,
     root,
@@ -100,16 +78,8 @@ export function defaultConfig(input: ConfigInput): Config {
     tagPattern: input.tagPattern ?? 'dsh-v*',
     webPort: input.webPort ?? 3080,
     smokePort: input.smokePort ?? 3099,
-    profile: input.profile ?? 'web',
     manualBuild: input.manualBuild ?? false,
     buildGateConcurrency: input.buildGateConcurrency ?? 1,
-    opencodeSession: {
-      enabled: session?.enabled ?? true,
-      source: session?.source ?? 'builtin',
-      npmVersion: session?.npmVersion ?? '^0.1.0',
-      header: session?.header ?? 'x-opencode-session',
-      urlMarkers: session?.urlMarkers ?? ['opencode.ai'],
-    },
     patchFiles: input.patchFiles ?? [],
   }
 }
@@ -128,16 +98,6 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
     const text = STRING(value, field)
     return isAbsolute(text) ? text : resolve(baseDir, text)
   }
-  const sessionRaw = record['opencodeSession']
-  const session = typeof sessionRaw === 'object' && sessionRaw !== null ? sessionRaw as Record<string, unknown> : {}
-  const source = session['source']
-  if (source !== undefined && source !== 'builtin' && source !== 'npm' && source !== 'off') {
-    throw new Error('config: "opencodeSession.source" must be builtin, npm, or off')
-  }
-  const markers = session['urlMarkers']
-  if (markers !== undefined && (!Array.isArray(markers) || markers.some(marker => typeof marker !== 'string'))) {
-    throw new Error('config: "opencodeSession.urlMarkers" must be an array of strings')
-  }
   const patches = record['patchFiles']
   if (patches !== undefined && (!Array.isArray(patches) || patches.some(patch => typeof patch !== 'string'))) {
     throw new Error('config: "patchFiles" must be an array of strings')
@@ -146,7 +106,7 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
   if (schema !== undefined && schema !== 1) throw new Error('config: unsupported "schema" (expected 1)')
   const stablePath = absolute(record['stablePath'], 'stablePath', join(root, 'deepseek-harness'))
   const slotsRoot = absolute(record['slotsRoot'], 'slotsRoot', join(root, 'dsh-slots'))
-  // A slots root inside the stable path would make every slot write go through the junction the
+  // A slots root inside the stable path would make every slot write go through the link the
   // tool switches, so the "never touch the serving slot" guards could no longer tell them apart.
   const nested = (outer: string, inner: string): boolean => inner === outer || inner.startsWith(`${outer}\\`) || inner.startsWith(`${outer}/`)
   if (nested(stablePath, slotsRoot)) throw new Error('config: "slotsRoot" must not be inside "stablePath"')
@@ -159,18 +119,10 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
     ...record['tagPattern'] === undefined ? {} : { tagPattern: STRING(record['tagPattern'], 'tagPattern') },
     webPort: record['webPort'] === undefined ? 3080 : PORT(record['webPort'], 'webPort'),
     smokePort: record['smokePort'] === undefined ? 3099 : PORT(record['smokePort'], 'smokePort'),
-    ...record['profile'] === undefined ? {} : { profile: STRING(record['profile'], 'profile') },
     manualBuild: record['manualBuild'] === true,
     buildGateConcurrency: record['buildGateConcurrency'] === undefined
       ? 1
       : CONCURRENCY(record['buildGateConcurrency']),
-    opencodeSession: {
-      enabled: session['enabled'] !== false,
-      source: source ?? 'builtin',
-      npmVersion: session['npmVersion'] === undefined ? '^0.1.0' : STRING(session['npmVersion'], 'opencodeSession.npmVersion'),
-      header: session['header'] === undefined ? 'x-opencode-session' : STRING(session['header'], 'opencodeSession.header'),
-      urlMarkers: (markers as string[] | undefined) ?? ['opencode.ai'],
-    },
     patchFiles: (patches as string[] | undefined) ?? [],
   })
 }

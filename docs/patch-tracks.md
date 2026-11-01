@@ -8,7 +8,7 @@ staged slot, refused loudly when one no longer applies.
 
 | Where | What it is |
 |---|---|
-| `patches\manifest.json` | the **catalog**: every patch the tool ships or knows about, with its purpose, issue, and verified tags |
+| `patches/manifest.json` | the **catalog**: every patch the tool ships or knows about, with its purpose, issue, and verified tags |
 | `dsh-upgrade.json` → `patchFiles` | the **active set**: what staging applies, in that order |
 
 `dsh-upgrade patch add <name>` copies a catalog entry into the active set; `patch add --file
@@ -16,6 +16,9 @@ staged slot, refused loudly when one no longer applies.
 other keys and the spelling of every path survive.
 
 ## Catalog schema
+
+The catalog ships empty; the entry below only shows the shape (its subject is the plugin-era
+header patch, which upstream now provides, so it stays retired).
 
 ```json
 {
@@ -105,4 +108,5 @@ staged record is **not** written, so `apply` has nothing to switch to.
 - Never ship a patch that only exists because a build artefact was hand-edited.
 - A patch list that grows is a signal to file the upstream issue, not to add a sixth patch.
 - The shipped catalog is empty on purpose: the one behaviour this machine used to patch (the
-  gateway session header) is now a plugin — see [opencode-session.md](opencode-session.md).
+  gateway session header) is sent by the harness itself — see
+  [0004-retire-opencode-session-plugin.md](decisions/0004-retire-opencode-session-plugin.md).

@@ -45,7 +45,7 @@ test('--help lists every v1 command, and none of them is a stub', () => {
   assert.equal(status, 0)
   for (const command of [
     'init', 'status', 'check', 'stage', 'apply', 'rollback', 'toggle', 'start', 'stop',
-    'doctor', 'opencode-session', 'patch', 'shortcuts', 'tray', 'task', 'log', 'version',
+    'doctor', 'patch', 'shortcuts', 'tray', 'task', 'log', 'version',
   ]) {
     assert.match(stdout, new RegExp(`^  ${command}\\b`, 'm'), `help must list ${command}`)
   }
@@ -63,7 +63,10 @@ test('every documented command runs its implementation, not a stub', () => {
   // `log` needs a configuration and fails with the probe code; what matters here is that the
   // command is dispatched instead of refusing as unimplemented.
   const dir = mkdtempSync(join(tmpdir(), 'dsh-upgrade-dispatch-'))
-  const { status, stderr } = spawnSync(process.execPath, [cliPath, 'log'], { cwd: dir, encoding: 'utf8' }) as unknown as { status: number, stderr: string }
+  // An explicit missing configuration: a file beside the tool (or in the checkout root) must
+  // never decide what this test sees.
+  const absent = join(dir, 'absent.json')
+  const { status, stderr } = spawnSync(process.execPath, [cliPath, 'log', '--config', absent], { cwd: dir, encoding: 'utf8' }) as unknown as { status: number, stderr: string }
   assert.equal(status, 4)
   assert.doesNotMatch(stderr, /not implemented yet/)
   assert.match(stderr, /run "dsh-upgrade init"/)
@@ -85,8 +88,11 @@ test('the version subcommand matches the flag form', () => {
   assert.equal(run(['version']).stdout, run(['--version']).stdout)
 })
 
-
-
+test('the retired plugin command is gone', () => {
+  const { status, stderr } = run(['opencode-session'])
+  assert.equal(status, 2)
+  assert.match(stderr, /unknown command "opencode-session"/)
+})
 
 
 test('a global flag without its value is a usage error, not a crash', () => {
@@ -98,7 +104,7 @@ test('a global flag without its value is a usage error, not a crash', () => {
 
 test('check on an uninitialized layout exits with the probe code and no stack', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-upgrade-noinit-'))
-  const result = spawnSync(process.execPath, [cliPath, 'check', '--json'], { cwd: dir, encoding: 'utf8' })
+  const result = spawnSync(process.execPath, [cliPath, 'check', '--json', '--config', join(dir, 'absent.json')], { cwd: dir, encoding: 'utf8' })
   const status = result.status
   const stderr = result.stderr
   assert.equal(status, 4)

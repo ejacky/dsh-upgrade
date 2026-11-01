@@ -1,13 +1,20 @@
 /**
  * The serving web process: who owns the port, how to stop it, how to start another.
  *
+ * The platform-varying parts (finding the owner, ending the tree) live in `host.ts`. What stays
+ * here is the readiness contract: a switch succeeded only when a URL the new process printed
+ * answers, or when a bare answer comes from the process this call started.
+ *
  * @module dsh-upgrade/engine/service
  */
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
 import { existsSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { portOwner, terminateTree } from './host.ts'
 import type { Config } from './config.ts'
+
+export { portOwner } from './host.ts'
 
 /** How long a freshly started server may take to answer; DSH_UPGRADE_START_TIMEOUT_MS overrides it. */
 const START_TIMEOUT_MS = Number(process.env['DSH_UPGRADE_START_TIMEOUT_MS'] ?? 5 * 60 * 1000)
@@ -23,37 +30,32 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * The process listening on a port.
- * @param port - web port.
- * @returns the process id, or `undefined` when nothing listens.
+ * Ask a URL for its status without throwing.
+ * @param url - absolute URL.
+ * @returns the HTTP status, or `undefined` when nothing answered.
  */
-export function portOwner(port: number): number | undefined {
-  if (process.platform !== 'win32') return undefined
-  const result = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true })
-  if (result.status !== 0) return undefined
-  for (const line of result.stdout.split(/\r?\n/)) {
-    if (!line.includes(`:${port} `) || !line.includes('LISTENING')) continue
-    const columns = line.trim().split(/\s+/)
-    const pid = Number(columns[columns.length - 1])
-    if (Number.isInteger(pid) && pid > 0) return pid
+async function statusOf(url: string): Promise<number | undefined> {
+  try {
+    const response = await fetch(url, { redirect: 'manual' })
+    return response.status
+  } catch {
+    return undefined
   }
-  return undefined
 }
 
 /**
  * Stop whatever serves the web port.
+ *
+ * Termination is asynchronous on POSIX, so the return value only says whether a listener was
+ * found and signalled; a caller that needs the port free must poll `portFree`.
  * @param port - web port.
- * @returns whether the port is free afterwards; `false` also means nothing listened.
+ * @returns whether a listener was signalled.
  */
 export function stopService(port: number): boolean {
   const pid = portOwner(port)
   if (pid === undefined) return false
-  if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8', windowsHide: true })
-  } else {
-    try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
-  }
-  return portOwner(port) === undefined
+  terminateTree(pid)
+  return true
 }
 
 /** A started server. */
@@ -120,19 +122,16 @@ export async function waitForService(config: Config, logPath: string, expectedPi
       // is this run's token.
       tokenised = [...text.matchAll(/http:\/\/127\.0\.0\.1:(\d+)\/\?token=\S+/g)].at(-1)?.[0]
     }
-    const ownedByThisStart = expectedPid !== undefined && portOwner(config.webPort) === expectedPid
-    for (const url of [tokenised, ownedByThisStart ? bare : undefined]) {
-      if (url === undefined) continue
-      try {
-        const response = await fetch(url, { redirect: 'manual' })
-        if (response.status === 200 || response.status === 401) return true
-      } catch {
-        // not listening yet
-      }
+    if (tokenised !== undefined) {
+      const status = await statusOf(tokenised)
+      if (status === 200 || status === 401) return true
+    }
+    if (expectedPid !== undefined) {
+      // Asking for the owner is only worth a `/proc` walk once the bare URL actually answered.
+      const status = await statusOf(bare)
+      if ((status === 200 || status === 401) && portOwner(config.webPort) === expectedPid) return true
     }
     await sleep(POLL_MS)
   }
   return false
 }
-
-

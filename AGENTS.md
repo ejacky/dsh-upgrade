@@ -1,8 +1,9 @@
 # AGENTS.md
 
-`dsh-upgrade` upgrades a **DeepSeek Harness source checkout** on Windows with two slot checkouts
-(`<root>\dsh-slots\a|b`) behind one stable-path junction. It also ships a tray companion, a
-scheduled watcher, and a vendored gateway-header plugin.
+`dsh-upgrade` upgrades a **DeepSeek Harness source checkout** on Windows and Linux with two slot
+checkouts (`<root>/dsh-slots/a|b`) behind one stable-path link (a junction on Windows, a symlink
+elsewhere). It also ships a tray companion (Windows) and a watcher (Task Scheduler or a systemd
+user timer).
 
 Read [docs/design.md](docs/design.md) before changing anything under `src/engine/`; it explains
 the invariants below and why they exist. [docs/commands.md](docs/commands.md) owns the command,
@@ -11,34 +12,38 @@ failure symptoms.
 
 ## Commands
 
-```powershell
+```sh
 node src/cli.ts --help        # run from sources; Node 24 strips the types, there is no build step
 node src/cli.ts doctor        # probe this machine before blaming a code change
 npm run typecheck             # tsc --noEmit (strict; see tsconfig.json)
-npm test                      # node --test, all offline (~30 s)
+npm test                      # node --test, all offline (~30 s per platform)
 node --test tests/apply.test.ts   # one file while iterating
-node scripts/package.mjs --dry-run   # what the release zip would contain
-node scripts/package.mjs             # write dist/dsh-upgrade-<version>.zip
+node scripts/package.mjs --dry-run   # what the release archive would contain
+node scripts/package.mjs             # dist/dsh-upgrade-<version>.zip (Windows) or .tar.gz (Linux)
 ```
 
 CI (`.github/workflows/ci.yml`) runs `npm install`, `npm run typecheck`, and `npm test` on
-`windows-latest`. Those two checks are the gate for landing a change, so run them locally first.
+`windows-latest` and `ubuntu-latest`. Both are the gate for landing a change, so run them locally
+first.
 
 ## Layout
 
 ```
 src/cli.ts            command table, global flags, exit codes, help
 src/commands/*.ts     one file per command; it parses its own flags and prints its own output
-src/engine/*.ts       the layout, state, locks, git, pnpm, service, smoke test, patches, profile
+src/engine/*.ts       the layout, state, locks, git, pnpm, service, smoke test, patches, config
+src/engine/host.ts    the platform seam: ports, process tree, links, launcher/unit dirs, spawn
 src/version.ts        reads version.json
-engine-ps/tray.ps1    the tray companion (PowerShell 7 + WinForms)
-plugins/opencode-session/  the vendored gateway plugin (plain JS, MIT, see NOTICE.md)
+engine-ps/tray.ps1    the tray companion (PowerShell 7 + WinForms, Windows only)
 patches/manifest.json the patch catalog (empty by default)
-scripts/package.mjs   builds the green zip
-setup.cmd             ASCII-only one-shot installer for an unpacked release
+scripts/package.mjs   builds the green zip (Windows) or tarball (Linux)
+setup.cmd             ASCII-only one-shot installer for an unpacked Windows release
+setup.sh              POSIX sh one-shot installer for an unpacked Linux release
 docs/                 quick-start, commands, design, troubleshooting, patch-tracks,
-                      distribution, opencode-session, decisions/
-tests/*.test.ts       one file per surface: most spawn the real CLI; primitives are unit-tested
+                      distribution, decisions/
+tests/*.test.ts       one file per surface: most spawn the real CLI; primitives are unit-tested.
+                      A platform split may add a second file (task.linux.test.ts)
+tests/helpers/        the one place that decides which platform's assertions can run
 ```
 
 ## Invariants
@@ -48,18 +53,18 @@ move, move its test with it.
 
 1. **Never write the serving slot.** `stage` writes only `spareSlot()`; it refuses a slot outside
    `slotsRoot`, the active slot, a real directory at `stablePath`, and a machine where `webPort`
-   is served but the junction does not identify a slot.
-2. **Never leave the machine serving nothing.** A failed switch restores the previous junction
-   *and* restarts the previous server. `apply --no-start` flips the junction and leaves the
+   is served but the link does not identify a slot.
+2. **Never leave the machine serving nothing.** A failed switch restores the previous link
+   *and* restarts the previous server. `apply --no-start` flips the link and leaves the
    running server alone.
 3. **Never report an effect you did not observe.** `stop` waits for the port, `apply` waits for a
-   URL that the process it started answers, `stage` smoke-tests the built entry, `install`
-   re-reads the profile, `task install` re-queries the task.
+   URL that the process it started answers, `stage` smoke-tests the built entry, and `task install`
+   re-queries the task.
 4. **One writer at a time.** `stage`, `apply --wait`, the detached `apply` worker, and `rollback`
    take `state/layout.lock`. `acquireLock` publishes atomically; a live owner is never evicted.
 5. **Versions only move forward.** `check` proposes strictly newer tags; `stage --tag` refuses a
    non-newer tag unless `--force`; `apply` refuses a slot that is no longer at the staged tag.
-6. **Deletes never follow a junction.** `removeTree` resolves the root, unlinks links, and refuses
+6. **Deletes never follow a link.** `removeTree` resolves the root, unlinks links, and refuses
    paths outside the allowed roots.
 7. **Uncommitted work is rescued first.** `ensureCheckout` writes tracked changes to
    `rescued/<slot>-<stamp>.patch` and copies untracked entries next to it before any
@@ -71,6 +76,10 @@ move, move its test with it.
    half-applied patch set.
 10. **Every failure exits `0/2/3/4` with one line, never a stack trace.** `cli.ts` catches at the
     top level; a command that can fail must report through its own JSON/stderr path.
+11. **A platform capability that is missing fails loudly.** `tray` on Linux exits `3` and points
+    at the launchers; `task install` without a systemd user session exits `3` and points at
+    `task install --dry-run`, which prints the units such a machine would have to run itself. No
+    command may silently degrade into doing nothing.
 
 ## Code conventions
 
@@ -89,8 +98,8 @@ move, move its test with it.
   justify itself against that and against the offline install.
 - **Errors are structured and actionable.** Name the file or value, say what to do next, and use
   the documented exit code (`2` usage, `3` needs a human, `4` environment).
-- **JSON output is a compatibility promise.** The tray and the scheduled task parse it; adding a
-  field is fine, renaming one is a breaking change that needs a docs update and a test.
+- **JSON output is a compatibility promise.** The tray and the watcher parse it; adding a field
+  is fine, renaming one is a breaking change that needs a docs update and a test.
 
 ### Adding or changing a command
 
@@ -103,7 +112,16 @@ move, move its test with it.
 5. Update `docs/commands.md` (the flag and JSON contract) and, if behaviour changed,
    `docs/troubleshooting.md`.
 
-## Windows specifics
+## Platform specifics
+
+Everything that differs between the platforms belongs in `src/engine/host.ts` (port owner,
+process tree, link swap, launcher/unit directories, child process group, pnpm executable); a
+command must not branch on `process.platform`. Four exceptions exist and are deliberate, because
+their *output* differs rather than a capability: the `tray` capability guard, the `doctor` probe
+list, the Task Scheduler/systemd renderers in `task`, and the `.lnk`/`.desktop` renderers in
+`shortcuts`.
+
+### Windows
 
 - `.cmd` files are **pure ASCII** (`cmd.exe` reads them in the console code page). A launcher
   `.cmd` is a trampoline to its sibling `.vbs` through `%~dp0`, so it never embeds a path.
@@ -117,11 +135,35 @@ move, move its test with it.
 - Long paths, junctions, and a `OneDrive`-redirected Desktop are the defaults this code meets:
   resolve the Desktop with `[Environment]::GetFolderPath('Desktop')`, and create junctions with
   `fs.symlinkSync(target, path, 'junction')`.
+- The server is stopped with `taskkill /T /F`; the port owner comes from `netstat -ano`.
+
+### Linux
+
+- The stable path is a symlink, replaced by writing a temporary symlink and renaming it over the
+  old one. Never unlink first: the stable path must not be missing even for a moment.
+- A child that may need to be killed as a tree is spawned with `detached: true`, so its children
+  share a process group and `process.kill(-pid, ...)` reaches them. A child spawned without it can
+  only be killed directly.
+- Port ownership comes from `/proc/net/tcp{,6}` and `/proc/<pid>/fd`, with `ss` and `lsof` only
+  as fallbacks. A port is free when `/proc` lists no listener for it and no bind refuses with
+  `EADDRINUSE`; the owner lookup alone is not an answer, because it cannot see another account's
+  socket.
+- The watcher is a systemd **user** timer under `$XDG_CONFIG_HOME/systemd/user` (default
+  `~/.config/systemd/user`). Tests must never call `systemctl`: render units with `--dry-run`.
+- Launchers are `.desktop` entries under `$XDG_DATA_HOME/applications`; `setup.sh` is POSIX sh and
+  ASCII only. There is no tray: `tray` exits `3` and points at the launchers.
 
 ## Testing
 
-- **Offline and self-contained.** Every test builds its own fixture under `%TEMP%` and deletes
-  nothing outside it. No test may touch the real `~/.dsh`: pass `DSH_HOME` at a temp directory.
+- **Offline and self-contained.** Every test builds its own fixture under the platform temp
+  directory and deletes nothing outside it. No test may touch the real `~/.dsh`: pass `DSH_HOME`
+  at a temp directory; for the watcher, pass `XDG_CONFIG_HOME` the same way.
+- **Platform splits live in the test, not in a blanket skip.** `tests/helpers/platform.ts` exposes
+  `skipUnlessWindows`/`skipUnlessPosix`; a skipped test says why it is platform-specific.
+  Never make a whole file conditional: the shared behaviour must still run on both.
+- **Never register, enable, remove, or start a real systemd unit or scheduled task.** `task` is
+  tested through `--dry-run` (units or `New-ScheduledTask` text) and through `task run`, which only
+  checks and stages; a read-only `task status` query for a made-up name is allowed.
 - **Fake the package manager** with `DSH_UPGRADE_PNPM_JS` (a Node script that stands in for
   `pnpm install` / `pnpm run build`). Real installs are never part of a test.
 - **Free ports, always.** Bind port 0, close, use the number; never assume `3080`/`3099` are free
@@ -134,24 +176,15 @@ move, move its test with it.
 - **Test the effect, not the call.** A detached `apply` is proven by polling the state file for
   the deployed tag; a rescue is proven by the copied file; a stop is proven by the port.
 - Name tests for the behaviour ("stage re-prepares a slot when a patch was added") and assert the
-  observable result. When a fixture writes a file, prefer the real format (`cordis.patch.yml`,
-  `.dsh-build/client-build-environment.json`) over an invented one.
-
-## The vendored plugin
-
-`plugins/opencode-session` is a modified copy of `dsh-x-opencode-session` 0.1.0 (MIT). Keep the
-upstream `LICENSE` unchanged; every local change belongs in `NOTICE.md` and in the module header.
-To update it: fetch the upstream package, diff `lib/index.js` against the copy, re-apply the
-config validation and the parameterised `wrapFetch`, bump the package version, and update
-`NOTICE.md` with the new upstream version. Its behaviour is tested in `tests/plugin.test.ts`
-(header decision, `Request` headers, config validation), which is the part the installer tests
-cannot see.
+  observable result. When a fixture writes a file, prefer the real format
+  (`.dsh-build/client-build-environment.json`) over an invented one.
 
 ## Documentation
 
 - One fact, one home: commands and JSON fields in `docs/commands.md`, invariants and failure
   behaviour in `docs/design.md`, symptoms and fixes in `docs/troubleshooting.md`, provenance and
-  the zip layout in `docs/distribution.md`, the plugin in `docs/opencode-session.md`.
+  the archive layout in `docs/distribution.md`, the platform matrix in the README and decision
+  0003, the plugin retirement in decision 0004.
 - A doc statement that the code does not support is a defect; fix the code or the sentence in the
   same change.
 - Decision records (`docs/decisions/`) are frozen once accepted: supersede, do not rewrite.
@@ -169,11 +202,11 @@ cannot see.
 
 ## Do not
 
-- Add a Windows service (see [docs/decisions/0001](docs/decisions/0001-no-windows-service.md)).
+- Add a system service (see [docs/decisions/0001](docs/decisions/0001-no-windows-service.md) and
+  [docs/decisions/0003](docs/decisions/0003-linux-parity.md)).
 - Add a `dsh` shim or any `PATH` entry (see [docs/decisions/0002](docs/decisions/0002-no-dsh-shim.md)).
 - Let the scheduled watcher or any background process switch versions: it prepares, a person
   applies.
-- Replace the operator's `cordis.patch.yml` without a `.bak-<stamp>` copy, or with a non-atomic
-  write.
+- Write the operator's DSH profile at all: the tool no longer manages it (decision 0004).
 - Truncate a log a failure message points at.
 - Silence a failure with `catch {}`: an empty catch names the error and why it is safe.

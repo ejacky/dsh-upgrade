@@ -3,7 +3,7 @@
  *
  * The switch stops the server, so it can never run inside the process it replaces: the
  * foreground command validates, takes the lock, spawns a detached worker, and returns. The
- * worker stops the server, flips the junction, starts the new slot, waits for it, and flips
+ * worker stops the server, flips the link, starts the new slot, waits for it, and flips
  * back when it does not answer.
  *
  * @module dsh-upgrade/commands/apply
@@ -12,9 +12,10 @@ import { spawn } from 'node:child_process'
 import { existsSync, openSync, closeSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig, resolveConfigPath } from '../engine/config.ts'
+import { waitPortFree } from '../engine/host.ts'
 import { describeLink, setLink } from '../engine/link.ts'
 import { acquireLock } from '../engine/lock.ts'
-import { portOwner, startService, stopService, waitForService } from '../engine/service.ts'
+import { startService, stopService, waitForService } from '../engine/service.ts'
 import { activeSlot, slotExists, slotPath, spareSlot, type SlotName } from '../engine/slots.ts'
 import { readState, statePathOf, writeState, withDeployed, type SlotRecord } from '../engine/state.ts'
 import { cliEntryPath } from '../engine/entry.ts'
@@ -76,7 +77,7 @@ interface SwitchOutcome {
  * @param config - resolved tool configuration.
  * @param target - slot to serve.
  * @param tag - tag expected in that slot.
- * @param noStart - flip the junction without touching the server (tests, or a stopped machine).
+ * @param noStart - flip the link without touching the server (tests, or a stopped machine).
  */
 async function switchTo(
   config: Parameters<typeof waitForService>[0],
@@ -97,7 +98,7 @@ async function switchTo(
   } catch (error) {
     return { ok: false, slot: target, tag, error: (error as Error).message }
   }
-  // `--no-start` flips the junction and leaves the running server alone: stopping it would leave
+  // `--no-start` flips the link and leaves the running server alone: stopping it would leave
   // the machine with nothing serving while reporting success.
   if (noStart) return { ok: true, slot: target, tag }
 
@@ -143,21 +144,6 @@ async function switchTo(
     tag,
     error: `new version did not answer on ${config.webPort}${previous === undefined ? '' : `; rolled back to slot ${previous}${previousTag === undefined ? '' : ` (${previousTag})`}`}`,
   }
-}
-
-/**
- * Wait until a port is free.
- * @param port - the port.
- * @param timeoutMs - upper bound.
- * @returns whether the port became free.
- */
-async function waitPortFree(port: number, timeoutMs = 30_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (portOwner(port) === undefined) return true
-    await new Promise(resolve => { setTimeout(resolve, 300) })
-  }
-  return portOwner(port) === undefined
 }
 
 /**

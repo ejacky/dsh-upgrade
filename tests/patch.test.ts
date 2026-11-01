@@ -341,7 +341,8 @@ test('patch remove matches a path spelled differently', async () => {
   const added = run(['patch', 'add', '--file', good, '--json'], root)
   assert.equal(added.status, 0, added.stderr)
 
-  const spelled = `${root}\\.\\good.patch`
+  // The same file spelled with a redundant `.` segment. Windows uses backslashes, POSIX `/`.
+  const spelled = process.platform === 'win32' ? `${root}\\.\\good.patch` : `${root}/./good.patch`
   const removed = run(['patch', 'remove', '--file', spelled, '--json'], root)
   assert.equal(removed.status, 0, removed.stderr)
   assert.deepEqual((JSON.parse(removed.stdout) as { patchFiles: string[] }).patchFiles, [])
@@ -398,7 +399,7 @@ test('an unknown verb or a missing configuration is reported with the documented
   assert.match(unknown.stderr, /unknown patch command "frobnicate"/)
 
   const uninitialized = mkdtempSync(join(tmpdir(), 'dsh-upgrade-patch-nocfg-'))
-  const missing = run(['patch', 'list'], uninitialized)
+  const missing = run(['patch', 'list', '--config', join(uninitialized, 'absent.json')], uninitialized)
   assert.equal(missing.status, 4)
   assert.match(missing.stderr, /run "dsh-upgrade init"/)
 })

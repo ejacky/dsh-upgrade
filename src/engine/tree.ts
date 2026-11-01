@@ -1,9 +1,10 @@
 /**
  * Deleting trees without following links.
  *
- * The layout deliberately contains junctions (`stablePath` points into a slot, and a slot
- * may contain linked `node_modules` entries). A recursive delete that follows them would
- * erase whichever tree they point at, so a link is removed as a link and never descended.
+ * The layout deliberately contains links: junctions on Windows, symlinks elsewhere
+ * (`stablePath` points into a slot, and a slot may contain linked `node_modules` entries). A
+ * recursive delete that follows them would erase whichever tree they point at, so a link is
+ * removed as a link and never descended.
  *
  * @module dsh-upgrade/engine/tree
  */

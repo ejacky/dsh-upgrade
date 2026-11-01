@@ -6,7 +6,13 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    # Both supported platforms are gates: a change that only works on one of them is not
+    # finished. Windows keeps the checks it had before the Linux port.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 

@@ -10,7 +10,7 @@
  */
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
-import { portOwner } from './service.ts'
+import { childProcessGroup, portOwner, processTreeAlive, terminateTree } from './host.ts'
 import { join } from 'node:path'
 import type { Config } from './config.ts'
 import { removeTree } from './tree.ts'
@@ -75,6 +75,7 @@ export async function smoke(config: Config, slotDirectory: string, logPath: stri
     env: { ...process.env, DSH_HOME: home },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    detached: childProcessGroup(),
   })
   const absorb = (chunk: Buffer): void => {
     for (const line of chunk.toString('utf8').split(/\r?\n/)) {
@@ -116,12 +117,13 @@ export async function smoke(config: Config, slotDirectory: string, logPath: stri
     }
     return { ok: false, urls, error: `no answer on port ${config.smokePort} within ${SMOKE_TIMEOUT_MS / 1000}s` }
   } finally {
-    if (exited === undefined) {
-      if (process.platform === 'win32') {
-        spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-      } else {
-        child.kill('SIGKILL')
-      }
+    if (exited === undefined && child.pid !== undefined) {
+      const pid = child.pid
+      terminateTree(pid)
+      // The SIGKILL escalation is asynchronous; logging "stopped" before the tree is gone would
+      // leave the next smoke fighting for the port it still holds.
+      const deadline = Date.now() + 5_000
+      while (Date.now() < deadline && processTreeAlive(pid)) await sleep(100)
       logger('stopped the smoke server')
     }
     const { appendFileSync } = await import('node:fs')

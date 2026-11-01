@@ -1,5 +1,5 @@
 /**
- * `apply` and `rollback` against a throwaway layout: the junction flips, the record moves, and
+ * `apply` and `rollback` against a throwaway layout: the link flips, the record moves, and
  * a version that does not start is rolled back automatically.
  * @module dsh-upgrade/tests/apply
  */
@@ -10,6 +10,8 @@ import { mkdirSync, mkdtempSync, readlinkSync, readFileSync, rmSync, writeFileSy
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { portFree } from '../src/engine/host.ts'
+import { stopPort } from './helpers/platform.ts'
 
 const repoRoot = join(import.meta.dirname, '..')
 const cliPath = join(repoRoot, 'src', 'cli.ts')
@@ -37,23 +39,6 @@ async function freePort(): Promise<number> {
       server.close(() => resolve(typeof address === 'object' && address !== null ? address.port : 0))
     })
   })
-}
-
-/**
- * Kill whatever serves a port.
- *
- * `apply` starts a real detached server on purpose, so a test that leaves it running would leak
- * a process and the port into every later run.
- * @param port - the port to evacuate.
- */
-function stopPort(port: number): void {
-  if (process.platform !== 'win32') return
-  const listed = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true })
-  for (const line of listed.stdout.split(/\r?\n/)) {
-    if (!line.includes(`:${port} `) || !line.includes('LISTENING')) continue
-    const pid = line.trim().split(/\s+/).at(-1)
-    if (pid !== undefined) spawnSync('taskkill', ['/PID', pid, '/T', '/F'], { encoding: 'utf8', windowsHide: true })
-  }
 }
 
 /** Stand-in pnpm writing a serving entry that answers 200. */
@@ -95,7 +80,7 @@ async function fixture(): Promise<{ root: string, fakePnpm: string, webPort: num
   writeFileSync(fakePnpm, FAKE_PNPM, 'utf8')
   const webPort = await freePort()
   writeFileSync(join(root, 'dsh-upgrade.json'), `${JSON.stringify({
-    schema: 1, root, upstream: origin, tagPattern: 'dsh-v*', webPort, smokePort: await freePort(), profile: 'web',
+    schema: 1, root, upstream: origin, tagPattern: 'dsh-v*', webPort, smokePort: await freePort(),
   }, null, 2)}\n`, 'utf8')
   return { root, fakePnpm, webPort }
 }
@@ -205,7 +190,7 @@ test('a version that never answers is rolled back automatically', async (t) => {
 test('a slot whose entry is missing is rolled back and the old version keeps serving', async () => {
   const { root, fakePnpm, webPort } = await fixture()
   const env = { DSH_UPGRADE_PNPM_JS: fakePnpm, DSH_UPGRADE_START_TIMEOUT_MS: '8000' }
-  test.after(() => { spawnSync('taskkill', ['/PID', '0', '/T', '/F'], { windowsHide: true }); return stopPort(webPort) })
+  test.after(() => stopPort(webPort))
   assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.2', '--json'], root, env).status, 0)
   assert.equal(run(['apply', '--wait', '--json'], root, env).status, 0)
   assert.equal(run(['stage', '--tag', 'dsh-v0.2.1-rc.3', '--json'], root, env).status, 0)
@@ -234,7 +219,7 @@ test('start brings the serving slot up and stop frees the port', async () => {
   let free = false
   for (let attempt = 0; attempt < 40; attempt += 1) {
     await new Promise(resolve => { setTimeout(resolve, 250) })
-    if (!portBusy(webPort)) { free = true; break }
+    if (await portFree(webPort)) { free = true; break }
   }
   assert.equal(free, true, 'the port must be free after stop')
   assert.equal(run(['toggle', '--yes', '--json'], root, env).status, 0)
@@ -250,9 +235,3 @@ test('toggle refuses to stop without consent when there is no terminal', async (
   assert.equal(refused.status, 3)
   assert.match(refused.stderr, /pass --yes/)
 })
-
-/** Whether something listens on a port. */
-function portBusy(port: number): boolean {
-  const result = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true })
-  return result.stdout.split(/\r?\n/).some(line => line.includes(`:${port} `) && line.includes('LISTENING'))
-}

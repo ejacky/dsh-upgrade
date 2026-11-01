@@ -21,23 +21,37 @@ test('defaults derive the stable path and slots from root', () => {
   assert.equal(config.slotsRoot, resolve('C:\\dsh', 'dsh-slots'))
   assert.equal(config.tagPattern, 'dsh-v*')
   assert.equal(config.webPort, 3080)
-  assert.equal(config.opencodeSession.enabled, true)
-  assert.equal(config.opencodeSession.source, 'builtin')
   assert.deepEqual(config.patchFiles, [])
 })
 
-test('parseConfig validates ports, sources, and patch lists', () => {
+test('parseConfig validates ports and patch lists', () => {
   const dir = scratch()
-  const ok = parseConfig({ root: dir, webPort: 4000, opencodeSession: { source: 'npm' }, patchFiles: ['a.patch'] }, dir)
+  const ok = parseConfig({ root: dir, webPort: 4000, patchFiles: ['a.patch'] }, dir)
   assert.equal(ok.webPort, 4000)
-  assert.equal(ok.opencodeSession.source, 'npm')
   assert.deepEqual(ok.patchFiles, ['a.patch'])
 
   assert.throws(() => parseConfig({ root: dir, webPort: 70000 }, dir), /port/)
-  assert.throws(() => parseConfig({ root: dir, opencodeSession: { source: 'latest' } }, dir), /builtin, npm, or off/)
   assert.throws(() => parseConfig({ root: dir, patchFiles: [1] }, dir), /array of strings/)
   assert.throws(() => parseConfig({ root: '' }, dir), /root/)
   assert.throws(() => parseConfig({ root: dir, schema: 2 }, dir), /schema/)
+})
+
+test('a configuration written for the retired plugin still loads', () => {
+  const dir = scratch()
+  const path = join(dir, 'dsh-upgrade.json')
+  writeFileSync(path, `${JSON.stringify({
+    schema: 1,
+    root: dir,
+    profile: 'web',
+    opencodeSession: { enabled: false, source: 'npm', header: 'x-custom', urlMarkers: ['example.test'] },
+  }, null, 2)}\n`, 'utf8')
+  const parsed = loadConfig(path)
+  assert.equal(parsed.webPort, 3080, 'an old key is ignored, not rejected')
+  assert.equal('opencodeSession' in parsed, false, 'the retired key must not come back')
+  assert.equal('profile' in parsed, false, 'the profile field no longer exists')
+  const defaults = defaultConfig({ root: dir })
+  assert.equal('opencodeSession' in defaults, false)
+  assert.equal('profile' in defaults, false)
 })
 
 test('a saved configuration loads back unchanged', () => {

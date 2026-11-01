@@ -34,6 +34,7 @@ jobs:
       - name: checksum
         run: |
           $zip = Get-ChildItem dist\*.zip | Select-Object -First 1
+          if ($null -eq $zip) { Write-Error "no zip was produced"; exit 1 }
           $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($zip.Name)" | Set-Content dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
@@ -43,4 +44,43 @@ jobs:
           files: |
             dist/*.zip
             dist/SHA256SUMS.txt
+          generate_release_notes: true
+
+  tarball:
+    # The Linux product is a tarball plus setup.sh; it is built on the platform it targets,
+    # because the packager deliberately uses only tools that platform already has. It waits for
+    # the zip job so the two do not race to create the same GitHub release.
+    needs: zip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: the tag must match version.json
+        run: |
+          version=$(node -p "require('./version.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match version.json (v$version)" >&2
+            exit 1
+          fi
+      - name: install dev dependencies
+        run: npm install --no-audit --no-fund
+      - name: typecheck
+        run: npm run typecheck
+      - name: test
+        run: npm test
+      - name: build the green tarball
+        run: node scripts/package.mjs
+      - name: checksum
+        run: |
+          cd dist
+          sha256sum ./*.tar.gz > SHA256SUMS-linux.txt
+          cat SHA256SUMS-linux.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS-linux.txt
           generate_release_notes: true

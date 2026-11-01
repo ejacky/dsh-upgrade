@@ -93,7 +93,6 @@ async function fixture(manualBuild = false): Promise<{ root: string, origin: str
     tagPattern: 'dsh-v*',
     webPort: await freePort(),
     smokePort,
-    profile: 'web',
     manualBuild,
   }, null, 2)}\n`, 'utf8')
   return { root, origin, fakePnpm, smokePort }
@@ -210,7 +209,7 @@ test('stage refuses a tag that is not newer than the deployed version', async ()
 
 test('stage refuses to run without a configuration', () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-upgrade-nocfg-'))
-  const result = run(['stage'], root)
+  const result = run(['stage', '--config', join(root, 'absent.json')], root)
   assert.equal(result.status, 4)
   assert.match(result.stderr, /run "dsh-upgrade init"/)
 })

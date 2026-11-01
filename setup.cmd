@@ -35,18 +35,18 @@ echo   node   !NODEV!
 
 echo.
 if not exist "!CONFIG!" goto create_layout
-echo [1/4] keeping the existing configuration
+echo [1/3] keeping the existing configuration
 echo        !CONFIG!
 goto check_machine
 
 :create_layout
-echo [1/4] creating the layout under !ROOT!
+echo [1/3] creating the layout under !ROOT!
 node "!CLI!" --config "!CONFIG!" init --root "!ROOT!"
 if errorlevel 1 exit /b 1
 
 :check_machine
 echo.
-echo [2/4] checking the machine
+echo [2/3] checking the machine
 node "!CLI!" --config "!CONFIG!" doctor
 if errorlevel 1 (
   echo [!] doctor reported a blocking problem. Fix it and run this file again.
@@ -54,15 +54,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/4] installing the gateway session plugin
-node "!CLI!" --config "!CONFIG!" opencode-session install
-if errorlevel 1 (
-  echo [!] the plugin was not installed. It needs a built harness under the stable path,
-  echo     so run "opencode-session install" again after the first "stage" and "apply".
-)
-
-echo.
-echo [4/4] creating the desktop launchers
+echo [3/3] creating the desktop launchers
 node "!CLI!" --config "!CONFIG!" shortcuts --install
 if errorlevel 1 (
   echo [!] the launchers were not created; the CLI still works.

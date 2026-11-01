@@ -10,25 +10,23 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { loadConfig, resolveConfigPath } from '../engine/config.ts'
+import { loadConfig, resolveConfigPath, type Config } from '../engine/config.ts'
 import { cliEntryPath } from '../engine/entry.ts'
+import { IS_WINDOWS, portFree, shortcutDirectory, waitPortFree } from '../engine/host.ts'
 import { portOwner, startService, stopService, waitForService } from '../engine/service.ts'
 import { activeSlot, slotPath } from '../engine/slots.ts'
 import type { RunOptions } from '../cli.ts'
 
 /**
- * Wait until a port is free.
- * @param port - the port.
- * @param timeoutMs - upper bound.
- * @returns whether the port became free.
+ * Explain a busy port whose listener this account cannot name.
+ *
+ * `/proc` can see the socket but not the owner when it belongs to another user, so the tool must
+ * say that instead of claiming nothing is running.
+ * @param port - the busy port.
+ * @returns one actionable sentence.
  */
-async function waitPortFree(port: number, timeoutMs = 30_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (portOwner(port) === undefined) return true
-    await new Promise(resolve => { setTimeout(resolve, 300) })
-  }
-  return portOwner(port) === undefined
+function unidentifiedListener(port: number): string {
+  return `${port} is in use by a process this account cannot identify; find it with "sudo ss -ltnp 'sport = :${port}'"`
 }
 
 /** Shared context for the three commands. */
@@ -71,6 +69,12 @@ export async function runStart(args: readonly string[], options: RunOptions): Pr
     else process.stdout.write(`already running on ${config.webPort} (pid ${owner})\n`)
     return 0
   }
+  if (!(await portFree(config.webPort))) {
+    const message = unidentifiedListener(config.webPort)
+    if (context.json) process.stdout.write(`${JSON.stringify({ ok: false, error: message, nextAction: 'human' })}\n`)
+    else process.stderr.write(`dsh-upgrade start: ${message}\n`)
+    return 3
+  }
   const active = activeSlot(config)
   if (active === undefined) {
     process.stderr.write('dsh-upgrade start: the stable path is not a slot link (run "init" and "apply")\n')
@@ -103,9 +107,17 @@ export async function runStop(options: RunOptions): Promise<number> {
   const { config } = context
   const owner = portOwner(config.webPort)
   if (owner === undefined) {
-    if (context.json) process.stdout.write(`${JSON.stringify({ ok: true, running: false })}\n`)
-    else process.stdout.write(`not running on ${config.webPort}\n`)
-    return 0
+    // "No owner" is not "nothing is running": /proc can see a socket whose owner this account
+    // cannot read. Ask the port itself before reporting that there was nothing to stop.
+    if (await portFree(config.webPort)) {
+      if (context.json) process.stdout.write(`${JSON.stringify({ ok: true, running: false })}\n`)
+      else process.stdout.write(`not running on ${config.webPort}\n`)
+      return 0
+    }
+    const message = unidentifiedListener(config.webPort)
+    if (context.json) process.stdout.write(`${JSON.stringify({ ok: false, error: message, nextAction: 'human' })}\n`)
+    else process.stderr.write(`dsh-upgrade stop: ${message}\n`)
+    return 3
   }
   stopService(config.webPort)
   // taskkill succeeding is not the same as the port being free: protection software can keep
@@ -136,7 +148,12 @@ export async function runToggle(args: readonly string[], options: RunOptions): P
   const context = contextOf(options)
   if (context === undefined) return 4
   const owner = portOwner(context.config.webPort)
-  if (owner === undefined) return runStart([], options)
+  if (owner === undefined) {
+    if (await portFree(context.config.webPort)) return runStart([], options)
+    const message = unidentifiedListener(context.config.webPort)
+    process.stderr.write(`dsh-upgrade toggle: ${message}\n`)
+    return 3
+  }
   if (!yes && process.stdin.isTTY !== true) {
     process.stderr.write(`dsh-upgrade toggle: running on ${context.config.webPort}; pass --yes to stop it\n`)
     return 3
@@ -163,8 +180,10 @@ export async function runToggle(args: readonly string[], options: RunOptions): P
 
 /** One desktop launcher: what it is called, what it runs, and whether it waits. */
 export interface Launcher {
-  /** File name stem of the `.cmd`/`.vbs`/`.lnk`. */
+  /** File name stem of the `.cmd`/`.vbs`/`.lnk` (Windows) or the `.desktop` entry (POSIX). */
   readonly name: string
+  /** Label shown in the application menu, when the platform has one. */
+  readonly title?: string
   /** CLI arguments the launcher passes. */
   readonly command: string
   /** `false` for a program that outlives its launcher, like the tray. */
@@ -173,10 +192,18 @@ export interface Launcher {
 
 /** The launchers `shortcuts` installs. */
 export const LAUNCHERS: readonly Launcher[] = [
-  { name: 'dsh-upgrade-start', command: 'toggle --yes', wait: true },
-  { name: 'dsh-upgrade-update', command: 'apply --wait', wait: true },
-  { name: 'dsh-upgrade-tray', command: 'tray', wait: false },
+  { name: 'dsh-upgrade-start', title: 'DeepSeek Harness: start or stop', command: 'toggle --yes', wait: true },
+  { name: 'dsh-upgrade-update', title: 'DeepSeek Harness: update', command: 'apply --wait', wait: true },
+  { name: 'dsh-upgrade-tray', title: 'DeepSeek Harness: tray', command: 'tray', wait: false },
 ]
+
+/**
+ * The launchers POSIX installs.
+ *
+ * There is no tray companion outside Windows, so the entry that would start one is left out
+ * rather than installed broken. `tray` says so when it is called.
+ */
+export const POSIX_LAUNCHERS: readonly Launcher[] = LAUNCHERS.filter(launcher => launcher.name !== 'dsh-upgrade-tray')
 
 /** The two wrapper files of one launcher. */
 export interface LauncherFiles {
@@ -212,6 +239,58 @@ export function launcherFiles(launcher: Launcher, bin: string, cli: string, node
 }
 
 /**
+ * Quote one `.desktop` `Exec` argument.
+ *
+ * `Exec` is not a shell, but it does treat backslash, double quote, backtick, and dollar as
+ * escapes inside its own double quotes.
+ * @param value - one argument.
+ * @returns the quoted argument.
+ */
+function quoteExec(value: string): string {
+  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('`', '\\`').replaceAll('$', '\\$').replaceAll('%', '%%')}"`
+}
+
+/**
+ * Escape one `.desktop` string value.
+ *
+ * A string value (not `Exec`) uses backslash escapes, and a literal backslash must be doubled;
+ * `%` is literal here, so only `Exec` doubles it.
+ * @param value - the raw value.
+ * @returns the value as the file must carry it.
+ */
+function desktopValue(value: string): string {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\r', '')
+    .replaceAll('\t', '\\t')
+}
+
+/**
+ * Render one launcher as a `.desktop` entry.
+ * @param launcher - which launcher.
+ * @param cli - absolute path of the CLI entry.
+ * @param node - absolute path of the node executable.
+ * @param workingDirectory - directory the command runs in.
+ * @returns the file's text.
+ */
+export function desktopEntry(launcher: Launcher, cli: string, node: string, workingDirectory: string): string {
+  const command = [node, cli, ...launcher.command.split(' ')].map(quoteExec).join(' ')
+  return [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Version=1.0',
+    `Name=${desktopValue(launcher.title ?? launcher.name)}`,
+    `Comment=${desktopValue(`Run: dsh-upgrade ${launcher.command}`)}`,
+    `Exec=${command}`,
+    `Path=${desktopValue(workingDirectory)}`,
+    'Terminal=false',
+    'Categories=Utility;',
+    '',
+  ].join('\n')
+}
+
+/**
  * The desktop launchers, as hidden wrappers plus shortcuts.
  * @param args - `--install` or `--remove`.
  * @param options - global options.
@@ -226,11 +305,22 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
   }
   const context = contextOf(options)
   if (context === undefined) return 4
-  const { config } = context
+  return IS_WINDOWS
+    ? windowsShortcuts(context.config, remove, options)
+    : posixShortcuts(context.config, remove, options)
+}
+
+/**
+ * Install or remove the Windows launchers: a `.cmd` trampoline, a `.vbs` wrapper, and a `.lnk`.
+ * @param config - resolved tool configuration.
+ * @param remove - `true` to remove instead of install.
+ * @param options - global options.
+ * @returns the exit code.
+ */
+function windowsShortcuts(config: Config, remove: boolean, options: RunOptions): number {
   const bin = join(config.root, 'bin')
   mkdirSync(bin, { recursive: true })
-  const desktopProbe = spawnSync('pwsh', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"], { encoding: 'utf8' })
-  const desktop = (desktopProbe.stdout ?? '').trim() !== '' ? (desktopProbe.stdout ?? '').trim() : join(process.env['USERPROFILE'] ?? '', 'Desktop')
+  const desktop = shortcutDirectory()
 
   if (remove) {
     for (const launcher of LAUNCHERS) {
@@ -274,6 +364,42 @@ export function runShortcuts(args: readonly string[], options: RunOptions): numb
   process.stdout.write([
     'created launchers:',
     ...LAUNCHERS.map(launcher => `  ${join(desktop, `${launcher.name}.lnk`)}`),
+  ].join('\n') + '\n')
+  return 0
+}
+
+/**
+ * Install or remove the POSIX launchers: one `.desktop` entry per command, in the application
+ * menu. There is no tray entry because there is no tray.
+ * @param config - resolved tool configuration.
+ * @param remove - `true` to remove instead of install.
+ * @param options - global options.
+ * @returns the exit code.
+ */
+function posixShortcuts(config: Config, remove: boolean, options: RunOptions): number {
+  const directory = shortcutDirectory()
+  if (remove) {
+    const existed = LAUNCHERS.some(launcher => existsSync(join(directory, `${launcher.name}.desktop`)))
+    for (const launcher of LAUNCHERS) rmSync(join(directory, `${launcher.name}.desktop`), { force: true })
+    if (options.json) process.stdout.write(`${JSON.stringify({ ok: true, removed: existed })}\n`)
+    else process.stdout.write('removed launchers\n')
+    return 0
+  }
+  mkdirSync(directory, { recursive: true })
+  const written: string[] = []
+  for (const launcher of POSIX_LAUNCHERS) {
+    const path = join(directory, `${launcher.name}.desktop`)
+    writeFileSync(path, desktopEntry(launcher, cliEntryPath(), process.execPath, config.root), 'utf8')
+    written.push(path)
+  }
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ ok: true, launchers: written })}\n`)
+    return 0
+  }
+  process.stdout.write([
+    'created launchers:',
+    ...written.map(path => `  ${path}`),
+    '  they appear in the application menu; no panel icon is installed',
   ].join('\n') + '\n')
   return 0
 }

@@ -4,6 +4,9 @@ node_modules/
 # build output (the tool runs from TypeScript sources on Node >=24)
 dist/
 
+# machine-specific tool configuration (written by "init" beside the tool)
+dsh-upgrade.json
+
 # runtime state and logs (never committed)
 logs/
 state/

@@ -10,6 +10,7 @@
 import { spawn } from 'node:child_process'
 import { createWriteStream, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { childProcessGroup, terminateTree } from './host.ts'
 
 /** How many trailing lines are kept for error messages. */
 const TAIL_LINES = 40
@@ -65,6 +66,7 @@ export function runLogged(options: ProcOptions): Promise<ProcResult> {
     // waiting forever, which is the difference between a failed step and a hung one.
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    detached: childProcessGroup(),
     ...options.shell === true ? { shell: true } : {},
   })
   child.stdout.on('data', (chunk: Buffer) => { absorb(chunk); log.write(chunk) })
@@ -72,15 +74,44 @@ export function runLogged(options: ProcOptions): Promise<ProcResult> {
 
   return new Promise<ProcResult>(resolve => {
     let settled = false
+    let forwarding = false
+    const detachSignals = (): void => {
+      process.removeListener('SIGINT', onInterrupt)
+      process.removeListener('SIGTERM', onTerminate)
+    }
     const finish = (code: number, timedOut: boolean): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      detachSignals()
       log.end()
       resolve({ code, timedOut, tail })
     }
+    // A detached child no longer receives the terminal's Ctrl-C. Forward the signal to the
+    // child's process group and only then let this process die, otherwise an interrupted
+    // `stage` leaves a build writing into the spare slot after the layout lock is reclaimed.
+    const forward = (signal: NodeJS.Signals): void => {
+      if (forwarding || settled) return
+      forwarding = true
+      const pid = child.pid
+      if (pid === undefined) {
+        detachSignals()
+        process.kill(process.pid, signal)
+        return
+      }
+      terminateTree(pid)
+      const closed = new Promise<void>(done => { child.once('close', () => done()) })
+      void Promise.race([closed, sleep(4_000)]).then(() => {
+        detachSignals()
+        process.kill(process.pid, signal)
+      })
+    }
+    const onInterrupt = (): void => { forward('SIGINT') }
+    const onTerminate = (): void => { forward('SIGTERM') }
+    process.on('SIGINT', onInterrupt)
+    process.on('SIGTERM', onTerminate)
     const timer = setTimeout(() => {
-      killTree(child.pid)
+      if (child.pid !== undefined) terminateTree(child.pid)
       finish(-1, true)
     }, options.timeoutMs)
     child.on('error', (error: Error) => {
@@ -92,18 +123,9 @@ export function runLogged(options: ProcOptions): Promise<ProcResult> {
 }
 
 /**
- * Kill a process and its descendants.
- * @param pid - root process id, when known.
+ * Sleep.
+ * @param ms - milliseconds.
  */
-function killTree(pid: number | undefined): void {
-  if (pid === undefined) return
-  if (process.platform === 'win32') {
-    spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-    return
-  }
-  try {
-    process.kill(-pid, 'SIGKILL')
-  } catch {
-    // The tree may already be gone; nothing useful to do.
-  }
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => { setTimeout(resolve, ms) })
 }

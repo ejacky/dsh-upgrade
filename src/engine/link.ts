@@ -1,13 +1,14 @@
 /**
- * The stable path: one junction that names whichever slot is serving.
+ * The stable path: one link that names whichever slot is serving.
  *
- * A junction is created and replaced atomically enough for our purposes because it is a
- * single directory entry; the serving process holds no handle on the path itself. Refusing to
- * replace a real directory keeps the tool from swallowing a hand-made checkout.
+ * A Windows junction and a POSIX symlink are both a single directory entry, so replacing it is
+ * the switch. Refusing to replace a real directory keeps the tool from swallowing a hand-made
+ * checkout; the replacement itself lives in `host.ts`, where the two platforms differ.
  *
  * @module dsh-upgrade/engine/link
  */
-import { existsSync, lstatSync, readlinkSync, symlinkSync, unlinkSync } from 'node:fs'
+import { existsSync, lstatSync, readlinkSync } from 'node:fs'
+import { replaceDirLink } from './host.ts'
 
 /**
  * What the stable path currently is.
@@ -22,7 +23,7 @@ export function describeLink(path: string): { kind: 'absent' } | { kind: 'link',
 }
 
 /**
- * Point the stable path at a slot, creating or replacing the junction.
+ * Point the stable path at a slot, creating or replacing the link.
  * @param path - the stable path.
  * @param target - slot directory to point at.
  * @throws when the path is a real directory (a checkout the tool did not create).
@@ -32,6 +33,5 @@ export function setLink(path: string, target: string): void {
   if (current.kind === 'directory') {
     throw new Error(`${path} is a real directory, not a link; move it aside first (see docs/design.md)`)
   }
-  if (current.kind === 'link') unlinkSync(path)
-  symlinkSync(target, path, 'junction')
+  replaceDirLink(path, target)
 }

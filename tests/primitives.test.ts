@@ -27,7 +27,9 @@ test('a command that outlives its budget is killed and reports a tail', async ()
     args: ['-e', "console.log('started'); setTimeout(() => {}, 60000)"],
     cwd: dir,
     logPath: log,
-    timeoutMs: 600,
+    // Generous enough for a node startup while the whole suite runs in parallel; the point is
+    // the timeout path, not how fast this machine boots a process.
+    timeoutMs: 3_000,
   })
   assert.equal(result.timedOut, true)
   assert.equal(result.code, -1)
@@ -82,7 +84,7 @@ test('removeTree deletes a link without following it', () => {
   const victim = join(root, 'victim')
   mkdirSync(victim)
   const link = join(victim, 'link')
-  symlinkSync(target, link, 'junction')
+  symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
   removeTree(victim, [root])
   assert.equal(existsSync(victim), false)
   assert.equal(existsSync(join(target, 'keep.txt')), true, 'the link target must survive')

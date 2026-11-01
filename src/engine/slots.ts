@@ -1,9 +1,9 @@
 /**
  * Slot layout: two checkouts behind one stable path.
  *
- * `stablePath` (a junction on Windows) points at whichever slot is serving. The other slot
- * is the only one the tool writes while `stage` runs. Slots are addressed by name so state
- * and logs stay valid when a machine's layout is re-rooted.
+ * `stablePath` (a junction on Windows, a symlink elsewhere) points at whichever slot is
+ * serving. The other slot is the only one the tool writes while `stage` runs. Slots are
+ * addressed by name so state and logs stay valid when a machine's layout is re-rooted.
  *
  * @module dsh-upgrade/engine/slots
  */

@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { skipUnlessPosix, skipUnlessWindows } from './helpers/platform.ts'
 
 const repoRoot = join(import.meta.dirname, '..')
 const cliPath = join(repoRoot, 'src', 'cli.ts')
@@ -30,7 +31,8 @@ function hasPwsh(): boolean {
   return probe.status === 0 && Number.parseInt((probe.stdout ?? '').trim(), 10) >= 7
 }
 
-test('tray --dry-run prints the command the companion would run', () => {
+test('tray --dry-run prints the command the companion would run', (context) => {
+  if (skipUnlessWindows(context)) return
   const home = mkdtempSync(join(tmpdir(), 'dsh-upgrade-tray-dry-'))
   const configPath = join(home, 'dsh-upgrade.json')
   writeFileSync(configPath, `${JSON.stringify({ schema: 1, root: home }, null, 2)}\n`, 'utf8')
@@ -55,20 +57,38 @@ test('tray rejects arguments it does not have', () => {
   assert.match(rejected.stderr, /unknown argument "--now"/)
 })
 
-test('tray without a configuration asks for init instead of starting', () => {
+test('tray without a configuration asks for init instead of starting', (context) => {
+  if (skipUnlessWindows(context)) return
   const empty = mkdtempSync(join(tmpdir(), 'dsh-upgrade-tray-nocfg-'))
-  const missing = run(['tray'], empty)
+  const missing = run(['tray', '--config', join(empty, 'absent.json')], empty)
   assert.equal(missing.status, 4)
   assert.match(missing.stderr, /run "dsh-upgrade init"/)
 })
 
-test('tray reports a configuration it cannot read', () => {
+test('tray reports a configuration it cannot read', (context) => {
+  if (skipUnlessWindows(context)) return
   const broken = mkdtempSync(join(tmpdir(), 'dsh-upgrade-tray-broken-'))
   writeFileSync(join(broken, 'dsh-upgrade.json'), '{"schema":1,"root":""}\n', 'utf8')
   const reported = run(['tray'], broken)
   assert.equal(reported.status, 4)
   assert.match(reported.stderr, /must be a non-empty string/)
   assert.ok(!reported.stderr.includes('    at '), 'no stack trace for a bad configuration')
+})
+
+test('tray says the companion is Windows-only instead of pretending to run', (context) => {
+  if (skipUnlessPosix(context, 'the tray companion exists only on Windows')) return
+  const reported = run(['tray'])
+  assert.equal(reported.status, 3)
+  assert.match(reported.stderr, /Windows-only/)
+  assert.match(reported.stderr, /shortcuts --install/)
+  assert.ok(!reported.stderr.includes('    at '), 'no stack trace for a missing capability')
+
+  const asJson = run(['tray', '--json'])
+  assert.equal(asJson.status, 3)
+  const report = JSON.parse(asJson.stdout) as { ok: boolean, error: string, nextAction: string }
+  assert.equal(report.ok, false)
+  assert.equal(report.nextAction, 'human')
+  assert.match(report.error, /Windows-only/)
 })
 
 test('the companion script parses as PowerShell', (context) => {

@@ -16,13 +16,19 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { LAUNCHERS, launcherFiles } from '../src/commands/power.ts'
 import { cliEntryPath } from '../src/engine/entry.ts'
+import { skipUnlessWindows } from './helpers/platform.ts'
 
 const repoRoot = join(import.meta.dirname, '..')
 const cliPath = join(repoRoot, 'src', 'cli.ts')
 
 /** Run the CLI and capture its streams and exit code. */
 function run(args: readonly string[], cwd: string, env: Record<string, string> = {}): { status: number, stdout: string, stderr: string } {
-  const result = spawnSync(process.execPath, [cliPath, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...env } })
+  const result = spawnSync(process.execPath, [cliPath, ...args], {
+    cwd,
+    encoding: 'utf8',
+    // The Linux watcher writes unit files under XDG_CONFIG_HOME; keep them out of the real home.
+    env: { ...process.env, XDG_CONFIG_HOME: join(cwd, '.xdg-config'), ...env },
+  })
   assert.equal(result.error, undefined, `spawn failed: ${String(result.error)}`)
   return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr }
 }
@@ -73,7 +79,8 @@ async function fixture(): Promise<{ root: string, origin: string, slot: string }
   return { root, origin, slot }
 }
 
-test('task install --dry-run describes the wrapper and the registration', async () => {
+test('task install --dry-run describes the wrapper and the registration', async (context) => {
+  if (skipUnlessWindows(context, 'Task Scheduler registration exists only on Windows')) return
   const { root } = await fixture()
   const dry = run(['task', 'install', '--dry-run', '--interval', '30', '--json'], root)
   assert.equal(dry.status, 0, dry.stderr)
@@ -114,7 +121,8 @@ test('task status reports an unregistered task without failing', async () => {
   assert.equal(report.name, 'DshUpgradeAbsentForTest')
 })
 
-test('task remove is idempotent and clears the wrapper', async () => {
+test('task remove is idempotent and clears the wrapper', async (context) => {
+  if (skipUnlessWindows(context)) return
   const { root } = await fixture()
   mkdirSync(join(root, 'bin'), { recursive: true })
   writeFileSync(join(root, 'bin', 'dsh-upgrade-task.vbs'), 'stale', 'utf8')
@@ -180,12 +188,13 @@ test('task refuses a dry run for a destructive verb', async () => {
 
 test('task without a configuration asks for init', () => {
   const empty = mkdtempSync(join(tmpdir(), 'dsh-upgrade-task-nocfg-'))
-  const missing = run(['task', 'status'], empty)
+  const missing = run(['task', 'status', '--config', join(empty, 'absent.json')], empty)
   assert.equal(missing.status, 4)
   assert.match(missing.stderr, /run "dsh-upgrade init"/)
 })
 
-test('every desktop launcher runs the CLI entry', () => {
+test('every desktop launcher runs the CLI entry', (context) => {
+  if (skipUnlessWindows(context, '.lnk launchers and wscript wrappers exist only on Windows')) return
   const bin = join(tmpdir(), 'dsh-upgrade-launchers')
   for (const launcher of LAUNCHERS) {
     const files = launcherFiles(launcher, bin, cliEntryPath(), process.execPath)

@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { join, resolve, sep } from 'node:path'
 import { loadConfig, resolveConfigPath, type Config } from '../engine/config.ts'
 import { describeLink } from '../engine/link.ts'
-import { portOwner } from '../engine/service.ts'
+import { portFree } from '../engine/host.ts'
 import { fetchTags, listTags, lsRemoteTags, tagsAtHead } from '../engine/git.ts'
 import { acquireLock } from '../engine/lock.ts'
 import { applyPatches } from '../engine/patches.ts'
@@ -225,13 +225,14 @@ export async function runStage(args: readonly string[], options: RunOptions): Pr
     if (active === slot) return fail(3, `spare slot resolved to the serving slot (${slot})`)
     // `spareSlot` falls back to `a` when the stable path is missing or is not a link. That is
     // correct on a fresh machine, but if a server is already listening, its slot is unknown and
-    // writing to `a` could be writing to the tree that server is running from.
+    // writing to `a` could be writing to the tree that server is running from. The port itself
+    // decides: an owner this account cannot name is exactly the case that must not pass.
     const link = describeLink(config.stablePath)
     if (link.kind === 'directory') {
-      return fail(3, `${config.stablePath} is a real directory; the tool only replaces a junction (move it aside and run "init")`)
+      return fail(3, `${config.stablePath} is a real directory; the tool only replaces a link (move it aside and run "init")`)
     }
-    if (active === undefined && portOwner(config.webPort) !== undefined) {
-      return fail(3, `something is serving on ${config.webPort} but ${config.stablePath} is not a slot junction; stop it or repair the link before staging`)
+    if (active === undefined && !(await portFree(config.webPort))) {
+      return fail(3, `something is serving on ${config.webPort} but ${config.stablePath} is not a slot link; stop it or repair the link before staging`)
     }
 
     if (flags.fetch) {

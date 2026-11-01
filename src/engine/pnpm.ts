@@ -10,6 +10,7 @@
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Config } from './config.ts'
+import { pnpmShim } from './host.ts'
 import { runLogged, type ProcResult } from './proc.ts'
 import { removeTree } from './tree.ts'
 import type { Logger } from './worktree.ts'
@@ -30,14 +31,16 @@ export interface PnpmInvocation {
  * Resolve how to run pnpm.
  *
  * Order: the explicit override, corepack's JavaScript entry beside the running Node, then the
- * `pnpm` shim through a shell (the least predictable case, kept last).
+ * platform's `pnpm` shim through a shell (the least predictable case, kept last).
  */
 export function pnpmInvocation(): PnpmInvocation {
   const override = process.env['DSH_UPGRADE_PNPM_JS']
   if (override !== undefined && override !== '') return { file: process.execPath, prefixArgs: [override] }
   const corepack = join(dirname(process.execPath), 'node_modules', 'corepack', 'dist', 'pnpm.js')
   if (existsSync(corepack)) return { file: process.execPath, prefixArgs: [corepack] }
-  return { file: 'pnpm.cmd', prefixArgs: [] }
+  // Windows only has the `.cmd` wrapper; POSIX installs a real executable, and spawning it
+  // directly keeps quoting out of the picture.
+  return { file: pnpmShim(), prefixArgs: [] }
 }
 
 /** Result of an install, including whether a stale layout had to be removed. */

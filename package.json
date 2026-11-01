@@ -1,7 +1,7 @@
 {
   "name": "dsh-upgrade",
   "version": "0.1.0",
-  "description": "Zero-downtime upgrades for DeepSeek Harness source checkouts on Windows: dual-slot checkouts behind a stable-path junction.",
+  "description": "Short-restart upgrades for DeepSeek Harness source checkouts on Windows and Linux: dual-slot checkouts behind one stable-path link.",
   "type": "module",
   "bin": {
     "dsh-upgrade": "src/cli.ts"
@@ -19,9 +19,9 @@
     "src",
     "engine-ps",
     "patches",
-    "plugins",
     "scripts",
     "setup.cmd",
+    "setup.sh",
     "version.json",
     "LICENSE",
     "README.md"
@@ -31,7 +31,8 @@
     "dsh",
     "upgrade",
     "zero-downtime",
-    "windows"
+    "windows",
+    "linux"
   ],
   "license": "MIT",
   "devDependencies": {
